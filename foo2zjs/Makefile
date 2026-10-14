@@ -8,10 +8,10 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=foo2zjs
-PKG_VERSION:=20200505dfsg0-3
+PKG_VERSION:=20200505
 PKG_RELEASE:=1
 
-PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).zip
+PKG_SOURCE:=foo2zjs-20200505dfsg0-3.zip
 #PKG_SOURCE_URL:=https://github.com/OpenPrinting/foo2zjs/archive/refs/tags/debian/
 #PKG_HASH:=061749f0066c17372e36b6d714871ef643083bd8d77cc55aa259e372e62af17e
 PKG_BUILD_DIR:=$(BUILD_DIR)/$(PKG_NAME)-$(PKG_VERSION)
