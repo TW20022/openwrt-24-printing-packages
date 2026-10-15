@@ -10,6 +10,7 @@ PKG_HASH:=ff31778a438bf335ceed254ccc706d5cd0eee55f608fcf567d88699b15f4fa9e
 PKG_FIXUP:=autoreconf
 PKG_INSTALL:=1
 
+PKG_BUILD_DEPENDS:=dbus
 TARGET_LDFLAGS += -L$(STAGING_DIR)/usr/lib -Wl,-rpath-link=$(STAGING_DIR)/usr/lib
 
 include $(INCLUDE_DIR)/package.mk
@@ -18,7 +19,7 @@ define Package/libcupsfilters
 	SECTION:=net
 	CATEGORY:=Network
 	SUBMENU:=Printing
-	DEPENDS:=+cups +ghostscript +poppler +fontconfig +lcms2 +qpdf +libjpeg-turbo +libpng +libtiff +libexif
+	DEPENDS:=+cups +ghostscript +poppler +fontconfig +lcms2 +qpdf +libjpeg-turbo +libpng +libtiff +libexif +libdbus
 	URL:=http://www.cups.org/
 	TITLE:=Common UNIX Printing System - libcupsfilters
 endef
