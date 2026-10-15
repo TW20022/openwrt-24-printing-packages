@@ -41,7 +41,7 @@ define Build/Prepare
 	@if [ ! -f $(DL_DIR)/$(PKG_SOURCE) ]; then \
 		curl -fL -o $(DL_DIR)/$(PKG_SOURCE) \
 			--connect-timeout 20 --retry 5 \
-			https://github.com/OpenPrinting/foo2zjs/archive/refs/tags/debian/$(PKG_VERSION).zip || \
+			https://github.com/OpenPrinting/foo2zjs/archive/refs/tags/debian/20200505dfsg0-3.tar.gz || \
 		( echo "Download failed"; rm -f $(DL_DIR)/$(PKG_SOURCE); exit 1 ); \
 	else \
 		echo "Using existing $(DL_DIR)/$(PKG_SOURCE)"; \
