@@ -66,6 +66,8 @@ CONFIGURE_ARGS+= \
 
 # Patch the Makefiles to run the binary from host compile
 define Build/Compile
+	$(SED) "s#\.\(/extract-strings\)#$(HOST_BUILD_DIR)/src/xml\1#" $(PKG_BUILD_DIR)/src/xml/Makefile
+	$(SED) "s#\.\(/check_duplicate_printers.test\)#$(HOST_BUILD_DIR)/src/xml/printers\1#" $(PKG_BUILD_DIR)/src/xml/printers/Makefile
 	$(call Build/Compile/Default)
 endef
 
