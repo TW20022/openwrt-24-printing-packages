@@ -8,12 +8,13 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=foo2zjs
-PKG_VERSION:=20200505
+PKG_VERSION:=20260206
 PKG_RELEASE:=1
 
-PKG_SOURCE:=foo2zjs-20200505dfsg0-3.zip
-#PKG_SOURCE_URL:=https://github.com/OpenPrinting/foo2zjs/archive/refs/tags/debian/
-#PKG_HASH:=061749f0066c17372e36b6d714871ef643083bd8d77cc55aa259e372e62af17e
+PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.gz
+PKG_SOURCE_URL:=https://github.com/OpenPrinting/foo2zjs/archive/refs/tags/
+PKG_HASH:=5f95fd47de9001d750d534ec7c729b2157734b483cb7400081b0d6973f92dcd0
+
 PKG_BUILD_DIR:=$(BUILD_DIR)/$(PKG_NAME)-$(PKG_VERSION)
 PATCH_DIR:=./patches
 
@@ -34,29 +35,34 @@ define Package/foo2zjs/description
 endef
 
 define Build/Prepare
-	# 创建构建目录
+	# 1. 确保构建目录存在
 	mkdir -p $(PKG_BUILD_DIR)
-	# 手动下载源码到 dl/ 目录，使用 PKG_SOURCE 指定的文件名（加入 -L 适应 GitHub 重定向）
-	@echo "Downloading foo2zjs source..."
+	
+	# 2. 如果 dl 目录中没有该压缩包，则使用 curl 手动下载并重命名保存
 	@if [ ! -f $(DL_DIR)/$(PKG_SOURCE) ]; then \
+		echo "Downloading foo2zjs source..." ; \
 		curl -fL -o $(DL_DIR)/$(PKG_SOURCE) \
 			--connect-timeout 20 --retry 5 \
-			https://github.com/OpenPrinting/foo2zjs/archive/refs/tags/debian/20200505dfsg0-3.zip || \
+			https://github.com/OpenPrinting/foo2zjs/archive/refs/tags/$(PKG_VERSION).tar.gz || \
 		( echo "Download failed"; rm -f $(DL_DIR)/$(PKG_SOURCE); exit 1 ); \
-	else \
-		echo "Using existing $(DL_DIR)/$(PKG_SOURCE)"; \
 	fi
-	# 解压到构建目录
-	unzip -q -d $(PKG_BUILD_DIR) $(DL_DIR)/$(PKG_SOURCE)
-	# 使用通配符匹配解压后的顶层目录，防止硬编码导致找不到路径
-	mv $(PKG_BUILD_DIR)/foo2zjs-debian-*/* $(PKG_BUILD_DIR)/
-	rmdir $(PKG_BUILD_DIR)/foo2zjs-debian-*
-	# --- 应用 patches 目录下的所有补丁文件 ---
+
+	# 3. 使用 tar 解压到构建目录并剥离外层版本目录
+	tar -xzf $(DL_DIR)/$(PKG_SOURCE) -C $(PKG_BUILD_DIR) --strip-components=1
+
+	# 4. 应用 patches 目录下的所有补丁文件
 	$(call PatchDir,$(PKG_BUILD_DIR),$(PATCH_DIR))
 endef
 
 define Build/Compile
-	$(call Build/Compile/Default)
+	# 1. 显式交叉编译根目录下的主程序和工具
+	$(MAKE) -C $(PKG_BUILD_DIR) \
+		CC="$(TARGET_CC)" \
+		CFLAGS="$(TARGET_CFLAGS)" \
+		LDFLAGS="$(TARGET_LDFLAGS)" \
+		all
+
+	# 2. 交叉编译 icc2ps 子目录
 	$(MAKE) -C $(PKG_BUILD_DIR)/icc2ps \
 		CC="$(TARGET_CC)" \
 		CFLAGS="$(TARGET_CFLAGS)" \
@@ -69,9 +75,8 @@ define Package/foo2zjs/install
 	$(INSTALL_DIR) $(1)/usr/share/cups/model
 	$(INSTALL_DIR) $(1)/usr/lib/cups/filter
 	$(INSTALL_DIR) $(1)/usr/share/foo2zjs
-#	$(MAKE) -C $(PKG_BUILD_DIR) DESTDIR=$(1) install-test
+
 	$(MAKE) -C $(PKG_BUILD_DIR) DESTDIR=$(1) install-prog
-#	$(MAKE) -C $(PKG_BUILD_DIR) DESTDIR=$(1) install-icc2ps
 	$(MAKE) -C $(PKG_BUILD_DIR)/icc2ps DESTDIR=$(1) install
 	$(MAKE) -C $(PKG_BUILD_DIR) DESTDIR=$(1) install-crd
 	$(MAKE) -C $(PKG_BUILD_DIR) DESTDIR=$(1) install-foo
@@ -79,10 +84,13 @@ define Package/foo2zjs/install
 	$(MAKE) -C $(PKG_BUILD_DIR) DESTDIR=$(1) install-filter
 endef
 
-define Package/postinst
+define Package/foo2zjs/postinst
 #!/bin/sh
-/etc/init.d/cupsd stop
-/etc/init.d/cupsd start
+[ -n "$$IPKG_INSTROOT" ] || {
+	/etc/init.d/cupsd enabled && {
+		/etc/init.d/cupsd restart
+	}
+}
 endef
 
 $(eval $(call BuildPackage,foo2zjs))
