@@ -43,7 +43,7 @@ define Build/Prepare
 		echo "Downloading foo2zjs source..." ; \
 		curl -fL -o $(DL_DIR)/$(PKG_SOURCE) \
 			--connect-timeout 20 --retry 5 \
-			https://github.com/OpenPrinting/foo2zjs/archive/refs/tags/$(PKG_VERSION).tar.gz || \
+			https://github.com/OpenPrinting/foo2zjs/archive/refs/tags/20260206.tar.gz || \
 		( echo "Download failed"; rm -f $(DL_DIR)/$(PKG_SOURCE); exit 1 ); \
 	fi
 
