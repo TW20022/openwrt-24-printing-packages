@@ -25,8 +25,7 @@ define Package/foo2zjs
 	CATEGORY:=Network
 	TITLE:=A linux printer driver for QPDL protocol
 	URL:=https://github.com/koenkooi/foo2zjs
-	DEPENDS:=+ghostscript +libjbigkit +cups +foomatic-rip
-	SUBMENU:=Printing
+	DEPENDS:=+ghostscript +cups +cups-filters
 endef
 
 define Package/foo2zjs/description
