@@ -11,7 +11,7 @@ PKG_NAME:=foo2zjs
 PKG_VERSION:=20260206
 PKG_RELEASE:=1
 
-PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.gz
+PKG_SOURCE:=$(PKG_VERSION).tar.gz
 PKG_SOURCE_URL:=https://github.com/OpenPrinting/foo2zjs/archive/refs/tags/
 PKG_HASH:=5f95fd47de9001d750d534ec7c729b2157734b483cb7400081b0d6973f92dcd0
 
