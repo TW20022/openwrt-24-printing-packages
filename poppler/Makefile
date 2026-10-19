@@ -2,12 +2,12 @@ include $(TOPDIR)/rules.mk
 include $(INCLUDE_DIR)/nls.mk
 
 PKG_NAME:=poppler
-PKG_VERSION:=26.10.0
+PKG_VERSION:=25.09.1
 PKG_RELEASE:=1
 
 PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.xz
 PKG_SOURCE_URL:=https://poppler.freedesktop.org/
-PKG_HASH:=6792cb7c69205007ad87d2e936cecc5b3a31fac29ab54ffc3175fdb6b2a6ce35
+PKG_HASH:=0c1091d01d3dd1664a13816861e812d02b29201e96665454b81b52d261fad658
 PKG_INSTALL:=1
 
 PKG_BUILD_DEPENDS:=libiconv-full boost
