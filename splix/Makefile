@@ -35,7 +35,10 @@ define Build/Configure
 endef
 
 define Package/$(PKG_NAME)/install
-	$(INSTALL_DIR)	/usr/share
+        $(INSTALL_DIR) $(1)/usr/lib/cups/filter
+        $(INSTALL_DIR) $(1)/usr/share/cups/model
+        $(CP) $(PKG_INSTALL_DIR)/usr/lib/cups/filter/* $(1)/usr/lib/cups/filter/
+        $(CP) $(PKG_INSTALL_DIR)/usr/share/cups/model/* $(1)/usr/share/cups/model/
 endef
 
 $(eval $(call BuildPackage,splix))
