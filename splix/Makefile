@@ -34,11 +34,8 @@ define Build/Configure
 	mv $(PKG_BUILD_DIR)/*.ppd $(PKG_BUILD_DIR)/ppd/
 endef
 
-define Package/$(PKG_NAME)/install
-        $(INSTALL_DIR) $(1)/usr/lib/cups/filter
-        $(INSTALL_DIR) $(1)/usr/share/cups/model
-        $(CP) $(PKG_INSTALL_DIR)/usr/lib/cups/filter/* $(1)/usr/lib/cups/filter/
-        $(CP) $(PKG_INSTALL_DIR)/usr/share/cups/model/* $(1)/usr/share/cups/model/
+define Package/splix/install
+	$(CP) $(PKG_INSTALL_DIR)/* $(1)/
 endef
 
 $(eval $(call BuildPackage,splix))
