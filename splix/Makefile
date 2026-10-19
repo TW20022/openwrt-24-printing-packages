@@ -34,7 +34,7 @@ define Build/Configure
 	mv $(PKG_BUILD_DIR)/*.ppd $(PKG_BUILD_DIR)/ppd/
 endef
 
-define Package/splix/install
+define Package/$(PKG_NAME)/install
 	$(CP) $(PKG_INSTALL_DIR)/* $(1)/
 endef
 
