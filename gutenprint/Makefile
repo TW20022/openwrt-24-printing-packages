@@ -58,7 +58,7 @@ CONFIGURE_ARGS+= \
 	--enable-escputil=no \
 	--disable-translated-cups-ppds \
 	--disable-globalized-cups-ppds \
-	--disable-simplified-cups-ppds \
+	--enable-simplified-cups-ppds \
 	--bindir=/usr/bin \
 	--sbindir=/usr/bin \
 	--prefix=/usr \
