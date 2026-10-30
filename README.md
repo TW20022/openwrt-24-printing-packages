@@ -253,3 +253,87 @@ hp-setup -i      # 连接打印机后配置
 - **`foomatic-filters` 已从本 feed 移除**：cups-filters 2.x 自带 `foomatic-rip`（`/usr/bin/foomatic-rip` 与 `/usr/lib/cups/filter/foomatic-rip`），独立包冗余；且 TW20022 版该包缺少 `install` 段，OpenWrt 会以 `package has no install section` 跳过、根本不产出 ipk。
 - `ghostscript-gnu-gs-fonts-other`（额外字体）默认不启用。
 - 编译验证环境为 4 核 / 3.8 GiB 内存，`-j2` 为稳妥值；内存 ≥8 GiB 可用 `-j$(nproc)` 提速。
+
+## 七、路由器端安装与使用
+
+### 7.1 安装顺序
+
+```sh
+opkg update
+opkg install cups cups-filters ghostscript qpdf poppler      # 打印底座
+opkg install hplip hplip-ppds hplip-tools                    # hplip 三件套（主包会自动拉依赖）
+opkg install hplip-scan                                      # 需要扫描时再装（引入 libsane）
+```
+
+包体参考：`hplip` 9.4 MB（装在设备上约 16 MB）、`hplip-ppds` 17 MB（1370 个 PPD，空间紧张可只解压需要的型号）、`hplip-tools` 0.5 MB。
+
+### 7.2 启动服务并添加打印机
+
+```sh
+/etc/init.d/cupsd enable && /etc/init.d/cupsd start
+hp-probe -b usb                       # 列出 USB 上的 HP 设备
+hp-makeuri <bus>:<dev>                # 取得设备 URI，如 hp:/usb/HP_LaserJet_1020?serial=000000000WA...
+hp-setup -i                          # 交互式建队列（无 GUI，务必带 -i）
+```
+
+`hp-setup -i` 会依次询问：连接方式（usb）→ 型号 → PPD → 队列名，最后自动调用 CUPS 接口创建队列。也可以直接在 CUPS 网页 `http://<路由器IP>:631` 或 LuCI 的「网络打印机」里添加，设备 URI 填 `hp-makeuri` 给出的那一串。
+
+### 7.3 hplip-tools 里有什么
+
+`hplip-tools` 提供 37 个命令，常用：
+
+| 命令 | 用途 |
+|---|---|
+| `hp-setup` | 建队列（`-i` 交互模式） |
+| `hp-plugin` | 安装 HP 专有插件（GDI 机型必需，见 7.5） |
+| `hp-firmware` | 手动给设备刷固件（`-y3 -s <bus>:<dev>` 静默） |
+| `hp-probe` / `hp-makeuri` | 探测设备 / 生成设备 URI |
+| `hp-info` / `hp-levels` | 设备信息 / 墨粉余量 |
+| `hp-check` / `hp-doctor` | 依赖与配置自检 |
+| `hp-clean` / `hp-align` / `hp-testpage` | 清洗 / 校准 / 测试页 |
+| `hp-config_usb_printer` | 热插拔时被调用，内部做插件检测 + 固件下发 |
+
+### 7.4 USB 热插拔脚本做了什么
+
+`/etc/hotplug.d/usb/10-hp-printer`（主包自带，`conffiles` 保护）在 USB `bind` 事件时：
+
+1. 只处理 HP 设备（`PRODUCT` 前缀 `3f0/`）且接口类为 `07/01`（打印机类）；
+2. 关闭该设备的 USB autosuspend（避免打印中途休眠掉线）；
+3. 给 `/dev/lpX` 设 `root:nogroup 0664`；
+4. 若 `/var/lib/hp/hplip.state` 不存在且 `~/.hplip/plugin_tmp/installPlugin.py` 在，则执行插件安装（本 feed 的 `010-fix-hplip-plugin-install.patch` 支持这种预解压安装）；
+5. 调 `hp-config_usb_printer <BUSNUM>:<DEVNUM>`——**这一步才是决定要不要刷固件的地方**。
+
+### 7.5 GDI / 主机型打印机（LaserJet 1020、P1005 等）的固件问题
+
+这类机器（1000/1005/1018/1020/1022、P1005/P1006/P1007/P1008/P1009/P1505、P1102/P1566 等）是"无固件裸机"：冷启动后 USB 里只有引导程序，**必须先下发固件才会变成正常打印机**，断电后每次都要重来。
+
+- 数据侧标记：`models.dat` 里这些型号是 `plugin=1`、`plugin-reason=1`、`fw-download=True`。
+- 固件不在 hplip 包里：本 feed 的 `hplip` ipk **0 个固件文件**（`data/` 下只有 ldl/localization/models/pcl/ps）。
+- 固件只在 HP 专有插件里：`hplip-3.25.6-plugin.run`（11.5 MB，SHA256 `0cd770036532a2d706c0f449ee1e3ef9b4de7b6cea5aaf2e76fe2da3f97f6ffc`）内含 13 个 `*.fw.gz`，其中 `hp_laserjet_1020.fw.gz` 仅 70 KB、`hp_laserjet_p1005.fw.gz` 153 KB。
+
+**结论：需要装一次插件，但不需要每次手动刷固件。**
+
+`hp-config_usb_printer` 的逻辑（`config_usb_printer.py`）：先查插件状态，未安装则打印
+`HP Device plugin's are not installed. Please install plugin's using hp-plugin command.` 并跳过；
+已安装且 `fw-download=True` 才执行 `hp-firmware -y3 -s <bus>:<dev>` 自动下发。因此在热插拔脚本生效之前，必须先满足插件这一环。
+
+插件安装（二选一）：
+
+```sh
+# A. 联网：直接让 hp-plugin 下载（需访问 hplip.sf.net / openprinting.org）
+hp-plugin -i
+
+# B. 离线：把 hplip-3.25.6-plugin.run 传到路由器后指定路径安装
+hp-plugin -i -p /tmp/hplip-3.25.6-plugin.run
+
+# B'. 离线且不想装 32 MB 插件的"只放固件"做法（够 1020/P1005 打印用）
+mkdir -p /usr/share/hplip/data/firmware
+cp hp_laserjet_1020.fw.gz /usr/share/hplip/data/firmware/
+hp-config_usb_printer 1-1:1.2        # 或 hp-firmware -y3 -s 1-1:1.2
+```
+
+> 说明：本 feed 编译时 `hpijs-install=no`、只保留 hpcups，LJ 1020 这类 ZJS 机型的编码器在 hpcups 内（`LJZjStream.cpp`），所以插件对它们的主要作用就是**携带固件**，用 B' 即可；`bb_*` 后端与扫描插件才需要完整插件。
+
+### 7.6 另一条路：foo2zjs（全开源，已在本 feed 内）
+
+`foo2zjs` ipk 自带 `HP-LaserJet_1020.ppd.gz` 与固件转换工具 `arm2hpdl`，同样支持 1005/1018/1020/1022/P1005/P1006/P1505 等。但它**不带固件本体**（`sihp1020.dl` 需要自行获取），安装后需自建 hotplug 规则把 `.dl` 写进 `/dev/usb/lp0`。适合不想引入 HP 专有插件的场景。
