@@ -47,7 +47,7 @@ OpenWrt 24.10.8 `armsr/armv8` 打印软件包 feed，由两个上游仓库合并
 | brlaser | 6-r1 | Brother 激光打印机驱动 |
 | brhl3040cncupswrapper / brhl3040cnfilter | 1.0-r1 | Brother HL-3040CN 驱动 |
 | foo2zjs | 20260206-r1 | 多品牌 GDI 打印机驱动（zjs/hp1020 等） |
-| gutenprint-cups | 5.3.5-r1 | Gutenprint 驱动集合 |
+| gutenprint-cups | 5.3.5-r1 | Gutenprint 驱动集合（已关闭 simplified PPD，每个型号只列一条） |
 | splix | 2.0.1-r1 | Samsung SPL 打印机驱动 |
 | liberation-fonts-ttf-* | 2.1.5-r1 | Liberation 字体（12 个 ttf 子包） |
 | python3-dbus | 1.4.0-r2 | hplip 依赖 |
@@ -184,7 +184,20 @@ hp-setup -i      # 连接打印机后配置
 - **原因**：feed Makefile 用 SED 把目标树里的 `./check_duplicate_printers.test`、`./extract-strings` 改写为 **hostpkg 构建目录的绝对路径**；但 host 阶段完成后 OpenWrt host-build 机制会 `find | xargs rm -rf` 清空 hostpkg 构建目录（只留 stamp），目标编译时这些路径必然不存在。
 - **修复**：注释掉 `check_duplicate_printers.test` 那条 SED（目标树 `--disable-test` 下本来就有本地 stub）；`extract-strings` 那条 SED 的替换目标改为 `true`（`xmli18n-tmp.h` 只在 dist 期生成 `po/POTFILES.in` 用，`--disable-nls` 下全树无人 include）。
 
-### 5. feeds 源与镜像
+### 5. gutenprint：CUPS 里每个型号出现两条（`Simplified` 不是"简体中文"）★
+- **现象**：CUPS「添加打印机」的型号列表里，同一个打印机出现两份，其中一份名称后缀是 `Simplified`，容易被误认为是"简体中文"。
+- **真相**：这是 gutenprint 的**简化版 PPD**（选项精简，给新手用），与语言无关。源码 `gutenprint.c: list_ppds()` 对每个型号固定输出 `/expert` 一条，若编译时定义了 `GENERATE_SIMPLIFIED_PPDS` 再额外输出 `/simple` 一条，两条的 CUPS 语言字段都硬编码为 `"en"`：
+  ```c
+  printf("\"%s://%s/expert\" ... \"%s\"", scheme, driver, "en", ...);
+  #ifdef GENERATE_SIMPLIFIED_PPDS
+  printf("\"%s://%s/simple\" ... \"%s" VERSION " Simplified\"", ...);
+  #endif
+  ```
+- **触发条件**：feed Makefile 里的 `--enable-simplified-cups-ppds`（对应 `BUILD_SIMPLE_PPDS=-DGENERATE_SIMPLIFIED_PPDS`）。
+- **修复**：改为 `--disable-simplified-cups-ppds`，重编后驱动二进制里只剩 `/expert"`、不再有 `/simple"`，CUPS 列表每个型号只出现一条。
+- **附注**：本 feed 的 gutenprint 包**不打包任何 PPD**（`install` 段故意不拷 `/usr/share/cups/model`），PPD 由 `gutenprint.5.3` 驱动 / `cups-genppd.5.3` 在运行时生成；型号名来自 XML，官方明确要求型号名不翻译，因此列表显示为英文属正常。
+
+### 6. feeds 源与镜像
 - `git.openwrt.org` 国内直连常在 `fetch-pack: unexpected disconnect` 处失败。解决办法：把 `feeds.conf` 里的官方 git 全部指向 GitHub 镜像并保留原 commit 锁定：
   ```
   src-git packages  https://gh-proxy.com/https://github.com/openwrt/packages.git^<commit>
@@ -194,13 +207,13 @@ hp-setup -i      # 连接打印机后配置
   ```
 - GitHub 直连不稳时统一用 `https://gh-proxy.com/https://github.com/...` 前缀（`git clone`、`wget`、raw 文件都适用）。
 
-### 6. 配置与 make 目标的坑
+### 7. 配置与 make 目标的坑
 - **子包 ≠ 编译目标**：`make package/liberation-fonts-ttf-LiberationMono/compile` 会报 `No rule to make target`。make 目标必须用**包目录名**（`package/feeds/printing/liberation-fonts/compile`），一个目录可含多个子包。
 - **子包必须逐个启用**：hplip 有 4 个子包（hplip / hplip-scan / hplip-ppds / hplip-tools），`CONFIG_PACKAGE_hplip=y` 只产主包，扫描、PPD、`hp-setup` 命令行工具都在子包里。
 - **符号名与目录名不一致**：`gutenprint` 的可选符号实际是 `CONFIG_PACKAGE_gutenprint-cups`；`liberation-fonts` 拆成 12 个 `-ttf-*` 子包；`ghostscript-gnu-gs-fonts` 只有 `-other` 一个可选子包。写错符号时 `make defconfig` 会静默丢弃，务必 `grep .config` 复查。
 - **架构切换必须 `make dirclean`**：从 x86/64 切到 armsr/armv8 时，旧工具链和 build_dir 会污染结果。
 
-### 7. Windows/WSL 环境（可选参考）
+### 8. Windows/WSL 环境（可选参考）
 - 本机为 Windows Server 2022（build 20348），内置 `wsl.exe` 只是引导器（不支持 `--import`），WSL 3.x 安装包不支持 Server 2022（exit 83），改用 **WSL 2.7.14 MSI** 后正常。
 - WSL 功能启用后必须**重启**才能生效。
 - 在 Git Bash 里调用 `msiexec` / `dism` 会被 MSYS 路径转换破坏参数，改用 PowerShell 或 `MSYS_NO_PATHCONV=1`。
