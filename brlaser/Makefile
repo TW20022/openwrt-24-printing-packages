@@ -34,6 +34,8 @@ define Package/brlaser/install
 	$(INSTALL_BIN) \
 		$(PKG_INSTALL_DIR)/usr/lib/cups/filter/rastertobrlaser \
 		$(1)/usr/lib/cups/filter
+	$(INSTALL_DIR) $(1)/usr/share/cups/drv
+	$(INSTALL_DATA) $(PKG_INSTALL_DIR)/usr/share/cups/drv/brlaser.drv $(1)/usr/share/cups/drv/
 endef
 
 $(eval $(call BuildPackage,brlaser))

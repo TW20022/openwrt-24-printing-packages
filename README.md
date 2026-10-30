@@ -337,3 +337,36 @@ hp-config_usb_printer 1-1:1.2        # 或 hp-firmware -y3 -s 1-1:1.2
 ### 7.6 另一条路：foo2zjs（全开源，已在本 feed 内）
 
 `foo2zjs` ipk 自带 `HP-LaserJet_1020.ppd.gz` 与固件转换工具 `arm2hpdl`，同样支持 1005/1018/1020/1022/P1005/P1006/P1505 等。但它**不带固件本体**（`sihp1020.dl` 需要自行获取），安装后需自建 hotplug 规则把 `.dl` 写进 `/dev/usb/lp0`。适合不想引入 HP 专有插件的场景。
+
+### 7.7 Brother 三个包怎么用
+
+| 包 | 内容 | 适用 |
+|---|---|---|
+| `brlaser` v6 | 全开源 CUPS filter `rastertobrlaser` + `brlaser.drv` | Brother 激光/LED 打印机（HL-1110/1210W/L2300D/L2340DW/L2360DN、DCP-1510/1600/7030/7055/7060D/7080/L2500D/L2520D/L2540DW、MFC-1910W 等约 29 个型号） |
+| `brhl3040cnfilter` | Brother 官方 **i386 闭源** filter + LUT 色彩表（从 hl3040cnlpr-1.1.2-1.i386.deb 重打包） | 仅 Brother HL-3040CN |
+| `brhl3040cncupswrapper` | 本 feed 重编译的 aarch64 CUPS filter + PPD | 仅 Brother HL-3040CN |
+
+**安装后在 CUPS「添加打印机」里可见吗？可见（需本 feed 2024-10-30 之后的版本）：**
+
+- `brlaser` 装完即把 `brlaser.drv` 装进 `/usr/share/cups/drv/`，CUPS 的 `lpinfo -m` / 添加打印机列表会直接列出全部 29 个型号（早期版本漏装 drv，只能 `lpadmin -P` 手动指定 PPD，已修复）；
+- `brhl3040cncupswrapper` 装完会把 PPD 同时放到 `/usr/share/ppd/hl3040cn.ppd` 和 `/usr/share/cups/model/brother/hl3040cn.ppd.gz`，后者在 CUPS 添加打印机列表中显示为 "Brother HL3040CN"。
+
+**HL-3040CN 的数据流与注意点：**
+
+```
+CUPS → brhl3040cncupswrapper(aarch64，写 /tmp/brparam.rc、/tmp/brpaper.inf)
+     → exec /opt/brother/Printers/hl3040cn/brhl3040cnfilter(i386 闭源)
+     → 打印机
+```
+
+- aarch64 上跑 i386 filter 依赖 `box86` + `libarmeabi`，**这两个包不在本 feed 也不在官方 feeds**，需自行编译安装；否则 `opkg install` 会报依赖缺失（`--force-depends` 可强装，但 filter 跑不起来）。
+- 二选一即可：HL-3040CN 优先试 `brlaser`？不行——brlaser 不含 3040CN，这个型号只能走官方 filter 路线。
+
+**通用建队命令（两包通吃）：**
+
+```sh
+opkg install brlaser                       # 或 brhl3040cnfilter brhl3040cncupswrapper
+lpinfo -m | grep -i brother                # 确认驱动已可见
+lpadmin -p Brother -v usb:///dev/usb/lp0 -m everywhere && lpadmin -p Brother -E   # 或:
+lpadmin -p HL3040CN -v usb:///dev/usb/lp0 -P /usr/share/ppd/hl3040cn.ppd -E
+```
