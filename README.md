@@ -42,7 +42,7 @@ OpenWrt 24.10.8 `armsr/armv8` 打印软件包 feed，由两个上游仓库合并
 | lcms2 | 2.15-r1 | 色彩管理 |
 | libcairo | 1.16.0-r2 | 2D 绘图库 |
 | libjbigkit | 2.2-r1 | JBIG 图像压缩 |
-| foomatic-filters | 4.0.17 | foomatic 过滤器 |
+| ~~foomatic-filters~~ | ~~4.0.17~~ | **已移除**：`foomatic-rip` 自 cups-filters 2.x 起已内置（见 `cups-filters` 的 `/usr/bin/foomatic-rip`、`/usr/lib/cups/filter/foomatic-rip`），独立包不再需要 |
 | cups-bjnp | 2.0.3-r1 | 佳能 BJNP 打印后端 |
 | brlaser | 6-r1 | Brother 激光打印机驱动 |
 | brhl3040cncupswrapper / brhl3040cnfilter | 1.0-r1 | Brother HL-3040CN 驱动 |
@@ -119,7 +119,7 @@ CONFIG_PACKAGE_brlaser=y
 CONFIG_PACKAGE_brhl3040cncupswrapper=y
 CONFIG_PACKAGE_brhl3040cnfilter=y
 CONFIG_PACKAGE_foo2zjs=y
-CONFIG_PACKAGE_foomatic-filters=y
+# 注意：不需要 foomatic-filters —— cups-filters 2.x 已内置 foomatic-rip
 CONFIG_PACKAGE_ghostscript-fonts-std=y
 CONFIG_PACKAGE_gutenprint-cups=y
 CONFIG_PACKAGE_libjbigkit=y
@@ -216,7 +216,6 @@ hp-setup -i      # 连接打印机后配置
 ├── cups-bjnp/
 ├── cups-filters/
 ├── foo2zjs/patches/003-skip-host-gs-dc-check.patch
-├── foomatic-filters/
 ├── ghostscript/
 ├── ghostscript-fonts-std/
 ├── ghostscript-gnu-gs-fonts/
@@ -238,5 +237,6 @@ hp-setup -i      # 连接打印机后配置
 ## 六、已知限制
 
 - `libImageProcessor` 相关功能（部分 LJZJet 系列）在 aarch64 上不可用。
+- **`foomatic-filters` 已从本 feed 移除**：cups-filters 2.x 自带 `foomatic-rip`（`/usr/bin/foomatic-rip` 与 `/usr/lib/cups/filter/foomatic-rip`），独立包冗余；且 TW20022 版该包缺少 `install` 段，OpenWrt 会以 `package has no install section` 跳过、根本不产出 ipk。
 - `ghostscript-gnu-gs-fonts-other`（额外字体）默认不启用。
 - 编译验证环境为 4 核 / 3.8 GiB 内存，`-j2` 为稳妥值；内存 ≥8 GiB 可用 `-j$(nproc)` 提速。
