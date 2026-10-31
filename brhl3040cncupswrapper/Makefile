@@ -17,7 +17,7 @@ define Package/$(PKG_NAME)
 	SECTION:=net
 	CATEGORY:=Network
 	SUBMENU:=Printing
-	DEPENDS:=+libcupsimage +brhl3040cnfilter +libc
+	DEPENDS:=+libcupsimage +brhl3040cnfilter +libc +box86 +libarmeabi
 	TITLE:=$(PKG_NAME)
 	URL:=https://github.com/
 endef

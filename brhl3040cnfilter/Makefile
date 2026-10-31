@@ -20,7 +20,7 @@ define Package/$(PKG_NAME)
   SECTION:=net
   CATEGORY:=Network
   SUBMENU:=Printing
-  DEPENDS:=+libc
+  DEPENDS:=+libc +box86 +libarmeabi
   TITLE:=Brother HL3040CN x86 binary filter
   URL:=https://github.com/
 endef

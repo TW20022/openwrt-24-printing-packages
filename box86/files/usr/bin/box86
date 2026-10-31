@@ -1,0 +1,2 @@
+#!/bin/sh
+exec /opt/armhf/bin/box86 "$@"
