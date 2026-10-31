@@ -25,12 +25,15 @@ OpenWrt 24.10.8 `armsr/armv8` 打印软件包 feed，由两个上游仓库合并
 | 构建主机 | Ubuntu 22.04 (WSL2)，4 vCPU / 3.8 GiB RAM |
 | 包格式 | ipk（`aarch64_generic`） |
 
-**包清单（全部实测编译通过，共 39 个 ipk）**
+**包清单（全部实测编译通过，共 42 个 ipk）**
 
 | 包 | 版本 | 说明 |
 |---|---|---|
 | hplip / hplip-scan / hplip-ppds / hplip-tools | 3.25.6-r1 | HP 打印/扫描，主包 + 扫描库 + PPD + 命令行工具 |
-| cups / libcups / libcupsimage | 2.4.20-r1 | CUPS 打印服务 |
+| cups / libcups / libcupsimage | 2.4.20-r1 | CUPS 打印服务（cupsd 守护进程 + libcups 库） |
+| cups-client | 2.4.20-r1 | CUPS 客户端命令：`lp` `lpstat` `lpoptions` `cancel` `lpadmin` `lpinfo` `cupsfilter` `ipptool` `ippfind` |
+| cups-bsd | 2.4.20-r1 | BSD 兼容命令：`lpr` `lpq` `lprm` `lpc` |
+| cups-ppdc | 2.4.20-r1 | PPD 编译工具：`ppdc` `ppdi` `ppdmerge` `ppdpo` `ppdhtml`（可选） |
 | cups-filters | 2.0.1-r1 | CUPS 过滤器 |
 | libcupsfilters | 2.1.1-r1 | CUPS 过滤库 |
 | libppd | 2.1.1-r1 | PPD 库 |
@@ -45,7 +48,9 @@ OpenWrt 24.10.8 `armsr/armv8` 打印软件包 feed，由两个上游仓库合并
 | ~~foomatic-filters~~ | ~~4.0.17~~ | **已移除**：`foomatic-rip` 自 cups-filters 2.x 起已内置（见 `cups-filters` 的 `/usr/bin/foomatic-rip`、`/usr/lib/cups/filter/foomatic-rip`），独立包不再需要 |
 | cups-bjnp | 2.0.3-r1 | 佳能 BJNP 打印后端 |
 | brlaser | 6-r1 | Brother 激光打印机驱动 |
-| brhl3040cncupswrapper / brhl3040cnfilter | 1.0-r1 | Brother HL-3040CN 驱动 |
+| brhl3040cncupswrapper / brhl3040cnfilter | 1.0-r1 / 1.0-r2 | Brother HL-3040CN 驱动（filter 为 i386 闭源程序，r2 起改为 box86 wrapper） |
+| box86 | 0.3.9-r3 | i386 用户态模拟器（armhf 32 位 + Dynarec，随包附带 armhf / i386 glibc） |
+| libarmeabi | 1.0-r1 | `libc.so.6` / `libm.so.6` 兼容垫片（指向 musl） |
 | foo2zjs | 20260206-r1 | 多品牌 GDI 打印机驱动（zjs/hp1020 等） |
 | gutenprint-cups | 5.3.5-r1 | Gutenprint 驱动集合（已关闭 simplified PPD，每个型号只列一条） |
 | splix | 2.0.1-r1 | Samsung SPL 打印机驱动 |
@@ -105,6 +110,9 @@ CONFIG_PACKAGE_hplip-scan=y
 CONFIG_PACKAGE_hplip-ppds=y
 CONFIG_PACKAGE_hplip-tools=y
 CONFIG_PACKAGE_cups=y
+CONFIG_PACKAGE_cups-client=y
+CONFIG_PACKAGE_cups-bsd=y
+CONFIG_PACKAGE_cups-ppdc=y
 CONFIG_PACKAGE_cups-filters=y
 CONFIG_PACKAGE_ghostscript=y
 CONFIG_PACKAGE_poppler=y
@@ -118,6 +126,8 @@ CONFIG_PACKAGE_cups-bjnp=y
 CONFIG_PACKAGE_brlaser=y
 CONFIG_PACKAGE_brhl3040cncupswrapper=y
 CONFIG_PACKAGE_brhl3040cnfilter=y
+CONFIG_PACKAGE_box86=y
+CONFIG_PACKAGE_libarmeabi=y
 CONFIG_PACKAGE_foo2zjs=y
 # 注意：不需要 foomatic-filters —— cups-filters 2.x 已内置 foomatic-rip
 CONFIG_PACKAGE_ghostscript-fonts-std=y
@@ -359,7 +369,9 @@ CUPS → brhl3040cncupswrapper(aarch64，写 /tmp/brparam.rc、/tmp/brpaper.inf)
      → 打印机
 ```
 
-- aarch64 上跑 i386 filter 依赖 `box86` + `libarmeabi`，**这两个包不在本 feed 也不在官方 feeds**，需自行编译安装；否则 `opkg install` 会报依赖缺失（`--force-depends` 可强装，但 filter 跑不起来）。
+- aarch64 上跑 i386 filter 依赖 `box86` + `libarmeabi`，**本 feed 已提供这两个包**（`box86` 为 armhf 32 位 + Dynarec，随包附带 armhf 与 i386 两套 glibc；`libarmeabi` 提供 `/lib/libc.so.6`、`/lib/libm.so.6` 垫片），opkg 会自动带上依赖。
+- 前提：内核必须开启 `CONFIG_COMPAT`（AArch32 兼容层）。验证：`/opt/brother/Printers/hl3040cn/brhl3040cnfilter` 能打印 `Error: invalid option !!` 即整链正常；若报 `Exec format error` 说明内核未开 32 位兼容。
+- `box86 -v` 会打印两行 `sh: lscpu: not found`，这是 box86 探测 CPU 型号时调用 `lscpu` 产生的噪声，无害可忽略。
 - 二选一即可：HL-3040CN 优先试 `brlaser`？不行——brlaser 不含 3040CN，这个型号只能走官方 filter 路线。
 
 **通用建队命令（两包通吃）：**
