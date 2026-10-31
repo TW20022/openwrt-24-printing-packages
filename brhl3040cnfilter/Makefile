@@ -8,7 +8,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=brhl3040cnfilter
 PKG_VERSION=1.0
-PKG_RELEASE=1
+PKG_RELEASE=2
 PKG_SOURCE:=hl3040cnlpr-1.1.2-1.i386.deb
 PKG_SOURCE_URL:=http://download.brother.com/welcome/dlf005905
 PKG_HASH:=ea5f589085fe7c99e655b9088f5933e5
@@ -49,7 +49,8 @@ define Package/$(PKG_NAME)/install
 		$(1)/opt/brother/Printers/hl3040cn/inf/lut/
 	$(INSTALL_BIN) \
 		$(PKG_BUILD_DIR)/opt/brother/Printers/hl3040cn/lpd/brhl3040cnfilter \
-		$(1)/opt/brother/Printers/hl3040cn/
+		$(1)/opt/brother/Printers/hl3040cn/brhl3040cnfilter.bin
+	$(INSTALL_BIN) ./files/brhl3040cnfilter $(1)/opt/brother/Printers/hl3040cn/brhl3040cnfilter
 endef
 
 $(eval $(call BuildPackage,$(PKG_NAME)))

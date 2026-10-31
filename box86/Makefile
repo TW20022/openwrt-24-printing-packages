@@ -6,7 +6,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=box86
 PKG_VERSION:=0.3.9
-PKG_RELEASE:=2
+PKG_RELEASE:=3
 
 RSTRIP:=true
 
