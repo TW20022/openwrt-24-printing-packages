@@ -8,6 +8,8 @@ PKG_NAME:=box86
 PKG_VERSION:=0.3.9
 PKG_RELEASE:=2
 
+RSTRIP:=true
+
 include $(INCLUDE_DIR)/package.mk
 
 define Package/box86
