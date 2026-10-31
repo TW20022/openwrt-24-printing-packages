@@ -171,6 +171,7 @@ hp-setup -i      # 连接打印机后配置
 - **现象**：`hpcups` 链接报 `skipping incompatible ./prnt/hpcups/libImageProcessor.so`，`Error 1`。
 - **原因**：HP 只随源码分发 **x86/x86_64 预编译**的 `libImageProcessor.so`，无 aarch64 版本、无源码。
 - **修复**：`hplip/patches/012-disable-imageprocessor-aarch64.patch` —— `hpcups_CXXFLAGS` 增加 `-DDISABLE_IMAGEPROCESSOR`、`hpcups_LDADD` 去掉 `-lImageProcessor`、`install-data-hook` 阻止拷贝 x86 库。源码中所有调用点都有该宏保护，仅 LJZJet（`ljzjstream`）路径使用，普通打印机不受影响。
+- **复核结论（aarch64 实测，2026-10）**：补丁只改 `Makefile.am` 一行，`#ifdef DISABLE_IMAGEPROCESSOR` 分支是 HP 上游自带的。实测 hpcups 在此宏下仍能为 LJ 1020 产出**合法 ZJS 流**（`ESC E` + `@PJL ENTER LANGUAGE=ZJS` + `JZJZ` 魔数 + 数据块），编码路径未被打断。判别方法见 7.5「离线验证 ZJS 编码器」。
 
 ### 2. 低内存主机 OOM（`cc1plus: Killed`）
 - **现象**：编译 `tools/llvm-bpf` 时 g++ 被杀，`toolchain/compile Error 2`。
@@ -254,6 +255,7 @@ hp-setup -i      # 连接打印机后配置
 ├── python3-dbus/
 ├── qpdf/
 ├── splix/
+├── cups-zh/                  # CUPS Web 中文界面包（非 OpenWrt 包，见 7.9）
 └── README.md
 ```
 
@@ -286,7 +288,7 @@ hp-makeuri <bus>:<dev>                # 取得设备 URI，如 hp:/usb/HP_LaserJ
 hp-setup -i                          # 交互式建队列（无 GUI，务必带 -i）
 ```
 
-`hp-setup -i` 会依次询问：连接方式（usb）→ 型号 → PPD → 队列名，最后自动调用 CUPS 接口创建队列。也可以直接在 CUPS 网页 `http://<路由器IP>:631` 或 LuCI 的「网络打印机」里添加，设备 URI 填 `hp-makeuri` 给出的那一串。
+`hp-setup -i` 会依次询问：连接方式（usb）→ 型号 → PPD → 队列名，最后自动调用 CUPS 接口创建队列。也可以直接在 CUPS 网页 `http://<路由器IP>:631` 或 LuCI 的「网络打印机」里添加，设备 URI 填 `hp-makeuri` 给出的那一串（网页管理需先配好管理员与访问控制，见 7.8）。
 
 ### 7.3 hplip-tools 里有什么
 
@@ -315,6 +317,13 @@ hp-setup -i                          # 交互式建队列（无 GUI，务必带 
 
 ### 7.5 GDI / 主机型打印机（LaserJet 1020、P1005 等）的固件问题
 
+> **实测设备修正**：本 feed 实际测试机是 **HP LaserJet 3050**（`03f0:3217`，MFP，标准 PCL5 机型），`models.dat` 里 `plugin=0`、`fw-download=False`，插上即枚举为 `1-1:1.0 class=07`（printer）+ `1-1:1.1 class=ff`（扫描件），**既不装插件也不刷固件**，`hp-setup -i` 直接建队列就能打。先确认自己的机型属于哪一类：
+>
+> ```sh
+> sed -n '/^\[hp_laserjet_1020\]/,/^\[/p' /usr/share/hplip/data/models/models.dat | grep -E 'plugin|fw-download'
+> # plugin=0 → 到此为止；plugin=1 + fw-download=True 才是下面要折腾的机型
+> ```
+
 这类机器（1000/1005/1018/1020/1022、P1005/P1006/P1007/P1008/P1009/P1505、P1102/P1566 等）是"无固件裸机"：冷启动后 USB 里只有引导程序，**必须先下发固件才会变成正常打印机**，断电后每次都要重来。
 
 - 数据侧标记：`models.dat` 里这些型号是 `plugin=1`、`plugin-reason=1`、`fw-download=True`。
@@ -325,7 +334,7 @@ hp-setup -i                          # 交互式建队列（无 GUI，务必带 
 
 `hp-config_usb_printer` 的逻辑（`config_usb_printer.py`）：先查插件状态，未安装则打印
 `HP Device plugin's are not installed. Please install plugin's using hp-plugin command.` 并跳过；
-已安装且 `fw-download=True` 才执行 `hp-firmware -y3 -s <bus>:<dev>` 自动下发。因此在热插拔脚本生效之前，必须先满足插件这一环。
+已安装且 `fw-download=True` 才执行 `hp-firmware -y3 -s <busnum>:<devnum>`（**三位补零的 USB ID**，来自 `lsusb`，不是 sysfs 的 `1-1:1.0`）自动下发。因此在热插拔脚本生效之前，必须先满足插件这一环。
 
 插件安装（二选一）：
 
@@ -339,12 +348,86 @@ hp-plugin -i -p /tmp/hplip-3.25.6-plugin.run
 # B'. 离线且不想装 32 MB 插件的"只放固件"做法（够 1020/P1005 打印用）
 mkdir -p /usr/share/hplip/data/firmware
 cp hp_laserjet_1020.fw.gz /usr/share/hplip/data/firmware/
-hp-config_usb_printer 1-1:1.2        # 或 hp-firmware -y3 -s 1-1:1.2
+hp-config_usb_printer 001:004       # 或 hp-firmware -y3 -s 001:004（busnum:devnum）
 ```
 
 > 说明：本 feed 编译时 `hpijs-install=no`、只保留 hpcups，LJ 1020 这类 ZJS 机型的编码器在 hpcups 内（`LJZjStream.cpp`），所以插件对它们的主要作用就是**携带固件**，用 B' 即可；`bb_*` 后端与扫描插件才需要完整插件。
 
+**装插件踩过的两个坑**
+
+1. `error: Plug-in GPG file [.../plugin.run.asc] download failed` —— `-p` 指定本地 `.run` 时，hp-plugin 会去找**同目录同名**的 `.asc`。缺 `.asc` 只是警告，随后问 `Do you still want to install the plug-in? (y=yes, n=no*, q=quit)`，**默认 no，必须手动敲 `y`**。
+2. `error: GPG command not found` —— 补上 `.asc` 反而卡死（OpenWrt 没有 `gnupg`，`hp-plugin` 2.1 也没有跳过验签的开关）。正确做法是**把 `.asc` 挪走**退回第 1 条，用 sha256 代替验签：
+   ```sh
+   sha256sum /tmp/hplip-3.25.6-plugin.run   # 应等于 0cd7700...7f6ffc
+   mv /tmp/hplip-3.25.6-plugin.run.asc /tmp/plugin.run.asc.bak
+   hp-plugin -i -p /tmp/hplip-3.25.6-plugin.run
+   ```
+   若 `~/.hplip/plugin_tmp/` 已有上次解压结果，会跳过解压直接 `Executing installPlugin.py` → `Done.`（没有 license 提示），属正常。
+
+**装成功长什么样**
+
+```sh
+ls -l /usr/share/hplip/data/firmware/*.fw.gz   # 13 个：1000/1005_series/1018/1020/P1005~P1009/P1505/P1102/P1102w/P1566
+ls /root/.hplip/plugin_tmp/*.so | head         # bb_escl-arm64.so 等 aarch64 后端在
+```
+
+**坑三：`/var` 是 tmpfs，插件状态随重启丢失** ★★
+
+状态文件落在 `/var/lib/hp/hplip.state`（`/var` 软链到 `/tmp`），内容三行 `[plugin]` / `installed = 1` / `eula = 1` / `version = 3.25.6`。断电即丢，表现为"插件装过、但每次冷启动还得手动刷固件"。修复：复制到 `/etc` 再软链回去，并让 `rc.local` 在 tmpfs 重建后补链：
+
+```sh
+mkdir -p /etc/hplip && cp /var/lib/hp/hplip.state /etc/hplip.state && chmod 644 /etc/hplip.state
+rm -f /var/lib/hp/hplip.state && ln -s /etc/hplip.state /var/lib/hp/hplip.state
+sed -i '/^exit 0/i [ -e /var/lib/hp/hplip.state ] || { mkdir -p /var/lib/hp; ln -sf /etc/hplip.state /var/lib/hp/hplip.state; }' /etc/rc.local
+```
+
+**离线验证 ZJS 编码器（没有 1020 硬件也能做）★**
+
+`hp-laserjet_1020.ppd.gz` 的 `cupsFilter` 是 `application/vnd.cups-raster 0 hpcups`，手动跑两段过滤器就能拿到真实打印数据流（绕开 cupsd 和 `file:` 后端的限制）：
+
+```sh
+cd /tmp
+printf '%%!PS\n/Helvetica findfont 20 scalefont setfont 72 700 moveto (test) show showpage\n' > page.ps
+zcat /usr/share/ppd/HP/hp-laserjet_1020.ppd.gz > p1020.ppd
+export PPD=/tmp/p1020.ppd CUPS_DATADIR=/usr/share/cups
+/usr/lib/cups/filter/gstoraster 1 root page 1 "PageSize=A4 Resolution=600dpi" page.ps > page.raster 2>gs.err
+/usr/lib/cups/filter/hpcups     1 root page 1 "PageSize=A4 Resolution=600dpi" page.raster > h.zjs 2>hpc.err
+ls -l page.raster h.zjs; cat hpc.err; hexdump -C -n 48 h.zjs
+```
+
+实测三组数据（aarch64，`DISABLE_IMAGEPROCESSOR` 生效，单页 A4 600dpi）：
+
+| 页面内容 | `x.raster` | `hpcups` 产出 | `foo2zjs` 产出 |
+|---|---|---|---|
+| 实心黑块（`rectfill`） | 3941714 | **503 B** | — |
+| 一行文字 + 一条线 | 3941714 | **1495 B** | — |
+| 5000 条随机短线（噪点） | 3941714 | **8791 B** | **9371 B** |
+
+判读要点：
+
+- `raster` 体积恒定（3941714）是因为它这个配置下是**未压缩定长位图**（621 B/行 × 6347 行），只由页面尺寸决定，**不能用来看内容**。
+- ZJS 是**行间差分**编码，所以纯色页反而最小（行间差分≈0），文字页中等、噪点页最大——**体积随内容复杂度单调增长**，说明编码器真的在编码。
+- 噪点页 hpcups 8791 B vs foo2zjs 9371 B，仅差 6%，与已知正确实现同量级 → **hpcups 的 ZJS 路径在 aarch64 上可用**。
+
+判据：0 字节、或 `hpc.err` 提到 `ImageProcessor`、或噪点页仍在 1 KB 级 → 编码器不可用，改走 7.6 的 foo2zjs。正常时 `hpc.err` 只有 `PAGE: 1 1`。
+
+噪点页比纯色页更能暴露问题，验证时优先用它。`foo2zjs` 的参考值来自其 PPD 的 `FoomaticRIPCommandLine`（`foo2zjs-wrapper -z1 -P -L0 %A`）：
+
+```sh
+cat > noise.ps <<'EOF'
+%!PS-Adobe-3.0
+0 setlinewidth
+1 1 5000 { pop rand 500 mod 40 add rand 780 mod 40 add moveto rand 100 mod 8 add 0 rlineto stroke } for
+showpage
+EOF
+foo2zjs-wrapper -z1 -P -L0 noise.ps > noise_f.zjs 2> f.err
+```
+
+附注：`gstoraster` 单独运行时**退出会 SIGSEGV**（raster 已完整写出，CUPS 管线内实测不影响出纸）。
+
 ### 7.6 另一条路：foo2zjs（全开源，已在本 feed 内）
+
+> 定位说明：本 feed 的 hpcups 已实测能为 LJ 1020 产出合法 ZJS 流（见 7.5），**正常情况下不需要切到这条路**；foo2zjs 作为"hpcups 输出异常"或"不想装 HP 专有插件"时的备选。
 
 `foo2zjs` ipk 自带 `HP-LaserJet_1020.ppd.gz` 与固件转换工具 `arm2hpdl`，同样支持 1005/1018/1020/1022/P1005/P1006/P1505 等。但它**不带固件本体**（`sihp1020.dl` 需要自行获取），安装后需自建 hotplug 规则把 `.dl` 写进 `/dev/usb/lp0`。适合不想引入 HP 专有插件的场景。
 
@@ -382,3 +465,135 @@ lpinfo -m | grep -i brother                # 确认驱动已可见
 lpadmin -p Brother -v usb:///dev/usb/lp0 -m everywhere && lpadmin -p Brother -E   # 或:
 lpadmin -p HL3040CN -v usb:///dev/usb/lp0 -P /usr/share/ppd/hl3040cn.ppd -E
 ```
+
+### 7.8 CUPS 网页管理：管理员账号、关掉强制 HTTPS、放开内网段
+
+**为什么会跳到 https / 报 `Upgrade Required`（426）**
+
+CUPS 2.2 起对 `<Location /admin>` 默认要求加密，浏览器用 `http://<IP>:631/admin` 会被重定向到 `https://<IP>:631/admin`，而 cupsd 用的是自签证书，于是继续报证书错误，管理页永远进不去。要两处同时成立才不跳：
+
+1. `cupsd.conf` 顶层 `DefaultEncryption Never`
+2. 各 `<Location>` 里不能有 `Encryption Required`（有就删掉或改成 `IfRequested`）
+
+**"管理员"是谁：CUPS 没有自己的账号库**
+
+它用**系统账号 + `SystemGroup`**（写在 `cups-files.conf`）判定：只有属于 `SystemGroup` 所列组的用户才能进 `/admin`。上游 Linux 默认是 `lpadmin` 组，**OpenWrt 没有这个组**，所以默认任何账号都进不去。
+
+```sh
+grep -n SystemGroup /etc/cups/cups-files.conf
+grep -E '^(lpadmin|cupsadmin):' /etc/group
+```
+
+两种做法：
+
+```sh
+# 做法 A：直接用 root 登录（最省事）
+# cups-files.conf 里改成：SystemGroup root
+# 前提：root 已设密码（passwd root），且 cupsd 以 root 运行（能读 /etc/shadow，OpenWrt 默认如此）
+
+# 做法 B：建专用管理员（推荐，不动 root）
+addgroup -S cupsadmin
+adduser  -S -D -H -G cupsadmin -s /bin/false cupsadmin
+passwd cupsadmin
+# cups-files.conf 里改成：SystemGroup sys root cupsadmin
+```
+
+**cupsd.conf 需要的块**（先 `cp /etc/cups/cupsd.conf /etc/cups/cupsd.conf.bak`）
+
+```apache
+Listen 0.0.0.0:631              # 原来若是 localhost:631，外网段根本连不上
+Listen /var/run/cups/cups.sock  # 保留：本机 CLI 走 socket 免密码
+WebInterface Yes                # 打开网页管理
+DefaultAuthType Basic
+DefaultEncryption Never         # ★ 关键：不再强制跳 https
+
+<Location />
+  Order allow,deny
+  Allow 127.0.0.1
+  Allow 192.168.0.0/16
+  Allow 10.0.0.0/8
+  Allow 172.16.0.0/12
+</Location>
+
+<Location /admin>
+  AuthType Default
+  Require user @SYSTEM          # 只有 SystemGroup 成员可进
+  Order allow,deny
+  Allow 127.0.0.1
+  Allow 192.168.0.0/16
+  Allow 10.0.0.0/8
+  Allow 172.16.0.0/12
+</Location>
+
+<Location /admin/conf>
+  AuthType Default
+  Require user @SYSTEM
+  Order allow,deny
+  Allow 127.0.0.1
+  Allow 192.168.0.0/16
+  Allow 10.0.0.0/8
+  Allow 172.16.0.0/12
+</Location>
+```
+
+上面三个网段覆盖了绝大多数家用/办公内网，**按实际 LAN 改成一条**（如 `Allow 192.168.1.0/24`）更严谨。`Allow @LOCAL` 也可以，但它只认"直连网段"，路由器桥接/容器场景经常判不出来，所以这里写死网段更可靠。
+
+**生效与验证**
+
+```sh
+cupsd -t                       # 语法检查，必须先过
+/etc/init.d/cupsd restart
+grep -n Encryption /etc/cups/cupsd.conf   # 除 DefaultEncryption Never 外不应再有 Encryption 行
+curl -sI http://127.0.0.1:631/admin | head -1
+# 期望：HTTP/1.1 401 Unauthorized   （要求认证＝正常）
+# 若是 426 Upgrade Required → 还有 Encryption Required 没清干净
+```
+
+浏览器访问 `http://<路由器IP>:631/admin`，弹出认证框时输入 `cupsadmin`（做法 B）或 `root`（做法 A）＋密码，即可进入 Administration。
+
+**注意点**
+
+- `DefaultEncryption Never` + Basic 认证 = 密码以 base64 明文过网，**只在内网用**，绝不要把 631 映射到 WAN；防火墙默认也不放行 WAN→631，不需要额外动作。
+- 本机 root 跑 `lpadmin` / `hp-setup` 走 `/var/run/cups/cups.sock`，由 socket 对端身份自动认证，**完全不需要网页登录**——建队列这条主线可以完全不碰 web 管理。
+- 若登录一直失败，先确认 cupsd 是否带 PAM：`strings /usr/sbin/cupsd | grep -c pam_`。命中但 `/etc/pam.d/cupsd` 不存在时，认证会始终失败；此时退回"只用 CLI 管理"，或改用 `SystemGroup root`（无 PAM 时 CUPS 直接读 `/etc/shadow` 比对）。
+- 给客户端共享打印机（IPP）：`lpadmin` 建好队列后，其他机器用 `ipp://<路由器IP>:631/printers/<队列名>` 添加即可，不需要开 `Browsing`。
+
+### 7.9 CUPS Web 界面中文化
+
+Web 管理界面（`http://<路由器IP>:631`）的页面由 `/usr/share/cups/templates/*.tmpl` 渲染，CGI 直接读文件，**覆盖即生效**，与浏览器 `Accept-Language`、`DefaultLanguage` 都无关。首页 `/` 则是静态文件 `doc-root/index.html`，与模板是两套东西，缺一个就会出现「首页叫类别、内页叫类」这类不一致。
+
+本仓库 `cups-zh/` 目录是这套中文界面包（含 `cups-zh-cn.tar.gz` 成品包）：
+
+| 内容 | 说明 |
+|---|---|
+| `cups-zh-cn.tar.gz` | 20 KB，65 个中文模板 + 中文首页 + `install.sh` |
+| `templates/` | 同上，未打包的源文件，便于对比与二次修改 |
+| `doc-root/index.html` | 中文首页 |
+| `install.sh` | 安装 / `--restore` 还原英文 |
+| `README.md` | 译文来源、逐项修补清单、已知限制 |
+
+安装：
+
+```sh
+# 把 cups-zh-cn.tar.gz 传到路由器
+cd /tmp && tar xzf cups-zh-cn.tar.gz && cd cups-zh-cn && sh install.sh
+# 装完 Ctrl+F5 强刷，浏览器会缓存模板渲染结果
+sh install.sh --restore        # 想回英文
+```
+
+脚本会自动做完这些事（不需要手动指定路径）：
+
+1. 探测 `DocumentRoot`：先看 `cups-files.conf` 里未注释的 `DocumentRoot`，没有就按 `cups.css` 实际位置反推。**OpenWrt 的 cups 把 doc-root 装在 `/usr/share/doc/cups`**，而 `/usr/share/cups/` 下根本没有 `doc-root`，写死路径必然扑空。
+2. 英文原件备份到 `/usr/share/cups/templates/default.en/`，首页备份为 `index.html.en`。
+3. 按本机 `header.tmpl` 判断用 `.header` 还是 `.cups-header` 类名——CUPS 2.4 系列中途改过类名，用错会让导航栏丢样式。
+4. 只覆盖本机真实存在的模板（上游已删的旧模板自动跳过），装完列出「本机有、包里没有」的英文模板。
+5. 重启 `cupsd`。
+
+相对上游译文做的修补（详见 `cups-zh/README.md`）：
+
+- `printer-added.tmpl` 补回「设置打印机选项」表单（`org.cups.sid` 全缺，否则加完打印机没有下一步入口）；
+- `jobs.tmpl` 补回 `{job_hold_until=auth-info-required?}` 分支，译全 `pending since / completed at / Unknown / Withheld`；
+- 导航「类别」「类」统一为**集群**，删掉「帮助」（`/help/` 文档未随固件打包，点了必 404）；class 相关 10 个模板的「添加类/删除类/修改类」同步改为集群；
+- 首页正文原来整片是 `help/*.html` 死链，换成「常用入口」+「使用提示」两栏。
+
+已知限制：`opkg upgrade cups` 会覆盖模板，升级后需重跑一次 `install.sh`；`help/` 在线帮助文档未汉化（原始译文包也没做完，几 MB 放路由器 Flash 不划算）。
