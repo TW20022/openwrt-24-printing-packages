@@ -43,9 +43,6 @@ define Package/$(PKG_NAME)/install
 	$(INSTALL_DATA) ./files/hl3040cn.ppd $(1)/usr/share/ppd/
 	$(INSTALL_DIR) $(1)/usr/share/cups/model/brother
 	gzip -9 -c ./files/hl3040cn.ppd > $(1)/usr/share/cups/model/brother/hl3040cn.ppd.gz
-	$(INSTALL_DIR) $(1)/lib
-	ln -sf libc.so $(1)/lib/libc.so.6
-	ln -sf libc.so $(1)/lib/libm.so.6
 endef
 
 $(eval $(call BuildPackage,$(PKG_NAME)))
