@@ -1,6 +1,6 @@
 #!/bin/sh
 # ============================================================
-# Brother HL-3040CN 打印链路自检 v6（无需真实打印机）
+# Brother HL-3040CN 打印链路自检 v8（无需真实打印机）
 #   用法:  sh hl3040cn-selftest.sh
 #   全程不需要插打印机，所有输出落在 /tmp
 #   查"链路通不通"用本脚本；查"数据整不整"用 hl3040cn-probe.sh
@@ -10,6 +10,11 @@
 #       改用纯 shell 看门狗；127 明确提示为"命令缺失"而非 filter 故障
 #   v6: 判定从"含 XL2HB"升级为"含 XL2HB + @PJL EOJ 收尾"，能识别数据被截断；
 #       日志摘要增加 cupswrapper 的每页/累计字节数行
+#   v7: 假 backend 写失败不再 exit 0（旧版会让 CUPS 报"exited with no errors"），
+#       改为非 0 + 记 savefile-backend.log；无文件时自动打印 df 与 backend 日志
+#   v8: backend 由 CUPS 以 lp 身份启动，不是 root。输出目录改由脚本自建并 chmod 777，
+#       输出路径由 DEVICE_URI 明确给出；先做可写性探测，失败时把 uid / 目录权限
+#       打进 CUPS 日志并返回非 0（v7 仍会因 root 建的 0644 文件而 EACCES）
 # ============================================================
 PPD=/usr/share/ppd/hl3040cn.ppd
 [ -f "$PPD" ] || PPD=/usr/share/cups/model/brother/hl3040cn.ppd
@@ -189,22 +194,46 @@ fi
 
 hr "2. 全链路：cupsd + 假 backend（把打印数据存成文件）"
 BACKEND=/usr/lib/cups/backend/savefile
-if [ ! -x $BACKEND ]; then
-  cat > $BACKEND <<'EOS'
+OUTDIR=/tmp/hl3040cn-out
+# v8: backend 不是以 root 跑的（CUPS 用 lp 身份启动它），所以
+#     ① 不能往 /tmp 下 root 建的 0644 文件里写（sticky 位下连删都删不掉）
+#     ② 目录必须显式放开写权限
+#     改成：输出目录由本脚本建并 chmod 777，输出路径由 DEVICE_URI 明确指定，
+#     写不了时把 uid / 目录权限打到 CUPS 日志里并返回非 0，不再"哑巴成功"。
+rm -rf $OUTDIR; mkdir -p $OUTDIR; chmod 777 $OUTDIR
+cat > $BACKEND <<'EOS'
 #!/bin/sh
-# 假 backend：不连打印机，把 CUPS 送来的打印数据原样存到 /tmp
-[ -z "$1" ] && exit 0          # 设备发现调用，直接返回
+# 假 backend：把 CUPS 送来的打印数据原样存盘，不连打印机
+[ $# -eq 0 ] && exit 0          # 设备发现调用，直接返回
 [ "$1" = "-" ] && exit 0
-out="/tmp/savefile-$1-$2.prn"
-cat > "$out"
-echo "INFO: saved to $out"
-exit 0
-EOS
-  chmod 755 $BACKEND
-  info "已创建假 backend: $BACKEND"
-else
-  info "假 backend 已存在: $BACKEND"
+
+out="${DEVICE_URI#savefile:}"
+case "$out" in /*) ;; *) out="" ;; esac
+[ -n "$out" ] || out="/tmp/savefile-$1-$2.prn"
+dir=`dirname "$out"`
+
+mkdir -p "$dir" 2>/dev/null
+if ! ( : > "$dir/.wtest.$$" ) 2>/dev/null; then
+  echo "ERROR: savefile: dir not writable: $dir (uid=`id -u` user=`id -un`) /tmp=`ls -ld /tmp 2>&1 | cut -d' ' -f1,3,4`" >&2
+  exit 1
 fi
+rm -f "$dir/.wtest.$$"
+
+cat > "$out"
+rc=$?
+if [ $rc -eq 0 ]; then
+  bytes=`wc -c < "$out"`
+  echo "`date '+%F %T'` job=$1 user=$2 uid=`id -u` ok bytes=$bytes -> $out" >> "$dir/savefile-backend.log"
+  echo "INFO: savefile: saved $bytes bytes to $out"
+  exit 0
+fi
+echo "`date '+%F %T'` job=$1 user=$2 uid=`id -u` FAILED rc=$rc -> $out" >> "$dir/savefile-backend.log" 2>/dev/null
+echo "ERROR: savefile: write to $out failed (rc=$rc)"
+exit 1
+EOS
+chmod 755 $BACKEND
+info "假 backend 已就位: $BACKEND"
+info "输出目录: $OUTDIR (0777)，backend 以 lp 身份运行也能写"
 
 /etc/init.d/cupsd enable >/dev/null 2>&1
 /etc/init.d/cupsd start >/dev/null 2>&1
@@ -217,22 +246,22 @@ lpstat -r >/dev/null 2>&1 && ok "cupsd 正在运行" || bad "cupsd 未启动"
 lpadmin -x $QNAME >/dev/null 2>&1
 made=0
 for i in 1 2 3; do
-  if lpadmin -p $QNAME -v savefile:/tmp/dummy -P "$PPD" -E 2>/tmp/lpadmin.err; then
+  if lpadmin -p $QNAME -v savefile:$OUTDIR/job.prn -P "$PPD" -E 2>/tmp/lpadmin.err; then
     made=1; break
   fi
   info "lpadmin 第 $i 次失败，3 秒后重试..."
   sleep 3
 done
 if [ $made -eq 1 ]; then
-  ok "已建队列 $QNAME（设备 URI: savefile:/tmp/dummy）"
+  ok "已建队列 $QNAME（设备 URI: savefile:$OUTDIR/job.prn）"
 else
   bad "lpadmin 三次都失败："
   sed -n '1,10p' /tmp/lpadmin.err
-  info "手动兜底： CUPS_SERVER=/var/run/cups/cups.sock lpadmin -p $QNAME -v savefile:/tmp/dummy -P $PPD -E"
+  info "手动兜底： CUPS_SERVER=/var/run/cups/cups.sock lpadmin -p $QNAME -v savefile:$OUTDIR/job.prn -P $PPD -E"
 fi
 lpstat -p $QNAME 2>&1 | sed 's/^/      /'
 
-rm -f /tmp/savefile-*.prn
+rm -f $OUTDIR/job*.prn
 jid=$(lp -d $QNAME $TXT 2>&1 | sed -n 's/.*request id is \([^ ]*\).*/\1/p')
 [ -n "$jid" ] && ok "作业已提交: $jid" || bad "lp 提交失败"
 jnum=$(printf '%s' "$jid" | sed -n 's/.*-\([0-9]*\)$/\1/p')
@@ -250,7 +279,7 @@ n=0
 last_report=0
 while [ $n -lt 300 ]; do   # 最长 300 x 2s = 10 分钟
   if ! job_running; then
-    for f in /tmp/savefile-*.prn; do
+    for f in $OUTDIR/job*.prn; do
       [ -f "$f" ] && found=1
     done
     break
@@ -261,7 +290,7 @@ while [ $n -lt 300 ]; do   # 最长 300 x 2s = 10 分钟
   if [ $((now-start-last_report)) -ge 10 ]; then
     last_report=$((now-start))
     cur=0
-    for f in /tmp/savefile-*.prn; do [ -f "$f" ] && cur=$(wc -c < "$f"); done
+    for f in $OUTDIR/job*.prn; do [ -f "$f" ] && cur=$(wc -c < "$f"); done
     info "处理中... 已等待 $((now-start)) 秒，落盘 $((${cur:-0}/1024)) KB"
   fi
 done
@@ -272,7 +301,7 @@ if job_running; then
 fi
 if [ $found -eq 1 ]; then
   info "等待了约 ${waited} 秒"
-  for f in /tmp/savefile-*.prn; do
+  for f in $OUTDIR/job*.prn; do
     [ -f "$f" ] || continue
     info "落盘文件: $f ($(wc -c < $f) 字节)"
     lang=$(grep -a -o '@PJL ENTER LANGUAGE=XL2HB' "$f" 2>/dev/null | wc -l)
@@ -292,6 +321,19 @@ if [ $found -eq 1 ]; then
   done
 else
   bad "作业结束但没有生成落盘文件"
+  info "backend 自己的日志（$OUTDIR/savefile-backend.log）:"
+  if [ -f $OUTDIR/savefile-backend.log ]; then
+    tail -5 $OUTDIR/savefile-backend.log | sed 's/^/      /'
+  else
+    info "      (空 —— backend 要么没被调用，要么在写日志前就退出了)"
+  fi
+  info "backend 在 CUPS 日志里的报错（这里会带 uid 和目录权限）:"
+  grep -a 'savefile' /var/log/cups/error_log 2>/dev/null | grep -aiE 'ERROR|not writable|Permission|failed' | tail -5 | sed 's/^/      /'
+  info "输出目录与 /tmp 的权限（backend 以 lp 身份跑，必须对 other 可写）:"
+  ls -ld /tmp $OUTDIR 2>&1 | sed 's/^/      /'
+  df -h /tmp 2>/dev/null | sed 's/^/      /'
+  info "手工以 lp 身份验证一次（关键：不是 root 能写就行）:"
+  info "      su lp -s /bin/sh -c 'echo hi > $OUTDIR/manual.prn' ; ls -l $OUTDIR/manual.prn"
 fi
 
 info "作业状态："
@@ -313,6 +355,7 @@ else
   lpadmin -x $QNAME >/dev/null 2>&1 && ok "已删除测试队列 $QNAME"
 fi
 info "假 backend 保留在 $BACKEND，下次可直接复用；不需要可 rm"
+info "本次落盘样本留在 $OUTDIR（0777，backend 以 lp 身份写入）"
 info "如要关调试日志： cupsctl --no-debug-logging"
 cat <<'EON'
 

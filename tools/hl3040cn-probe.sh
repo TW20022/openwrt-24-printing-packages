@@ -1,6 +1,6 @@
 #!/bin/sh
 # ============================================================
-# Brother HL-3040CN 打印数据完整性探针 v1（无需真实打印机）
+# Brother HL-3040CN 打印数据完整性探针 v3（无需真实打印机）
 #
 #   hl3040cn-selftest.sh 只回答"链路通不通"，本脚本回答"数据整不整"：
 #   同一份文档连打 N 次，逐份统计 PJL 结构，判断是整页输出还是被截断。
@@ -15,6 +15,10 @@
 #     UEL + JOB + ... + ENTER LANGUAGE + )BROTHER + <二进制> + UEL + EOJ + UEL
 #
 #   用法： sh hl3040cn-probe.sh [次数，默认 3]
+#
+#   v3: backend 以 lp 身份运行，不能写 root 建的 0644 文件（sticky 位连删都删不掉）。
+#       输出目录改为脚本自建并 chmod 777，路径由 DEVICE_URI 指定；写不了时
+#       把 uid / 目录权限打进 CUPS 日志并返回非 0，不再"哑巴成功"
 # ============================================================
 PPD=/usr/share/ppd/hl3040cn.ppd
 [ -f "$PPD" ] || PPD=/usr/share/cups/model/brother/hl3040cn.ppd
@@ -22,7 +26,8 @@ Q=HL_PROBE
 B=/usr/lib/cups/backend/savefile
 TXT=/tmp/probe.txt
 N=${1:-3}
-OUTDIR=/tmp/probe
+OUTDIR=/tmp/hl3040cn-out
+JOB=$OUTDIR/job.prn
 
 ok()   { printf '  [ OK ] %s\n' "$1"; }
 bad()  { printf '  [FAIL] %s\n' "$1"; }
@@ -64,21 +69,43 @@ analyse() {
 }
 
 hr "0. 准备"
-[ -x "$B" ] || {
-  cat > $B <<'EOS'
+# backend 不是 root 跑的（CUPS 以 lp 身份启动），所以输出目录必须显式放开写权限；
+# 写失败时返回非 0 并把原因打到 CUPS 日志，避免"作业成功但没文件"。
+cat > $B <<'EOS'
 #!/bin/sh
-[ -z "$1" ] && exit 0
+[ $# -eq 0 ] && exit 0
 [ "$1" = "-" ] && exit 0
-cat > "/tmp/savefile-$1-$2.prn"
-echo "INFO: saved"
-exit 0
+
+out="${DEVICE_URI#savefile:}"
+case "$out" in /*) ;; *) out="" ;; esac
+[ -n "$out" ] || out="/tmp/savefile-$1-$2.prn"
+dir=`dirname "$out"`
+
+mkdir -p "$dir" 2>/dev/null
+if ! ( : > "$dir/.wtest.$$" ) 2>/dev/null; then
+  echo "ERROR: savefile: dir not writable: $dir (uid=`id -u` user=`id -un`) /tmp=`ls -ld /tmp 2>&1 | cut -d' ' -f1,3,4`" >&2
+  exit 1
+fi
+rm -f "$dir/.wtest.$$"
+
+cat > "$out"
+rc=$?
+if [ $rc -eq 0 ]; then
+  bytes=`wc -c < "$out"`
+  echo "`date '+%F %T'` job=$1 user=$2 uid=`id -u` ok bytes=$bytes -> $out" >> "$dir/savefile-backend.log"
+  echo "INFO: savefile: saved $bytes bytes to $out"
+  exit 0
+fi
+echo "`date '+%F %T'` job=$1 user=$2 uid=`id -u` FAILED rc=$rc -> $out" >> "$dir/savefile-backend.log" 2>/dev/null
+echo "ERROR: savefile: write to $out failed (rc=$rc)"
+exit 1
 EOS
-  chmod 755 $B
-}
+chmod 755 $B
 ok "假 backend: $B"
 printf 'probe page\nline 2 1234567890\n' > $TXT
 info "测试文档: $TXT ($(wc -c < $TXT) 字节)，连打 $N 次"
-rm -rf $OUTDIR; mkdir -p $OUTDIR
+rm -rf $OUTDIR; mkdir -p $OUTDIR; chmod 777 $OUTDIR
+info "输出目录: $OUTDIR (0777)，backend 以 lp 身份运行也能写"
 
 /etc/init.d/cupsd start >/dev/null 2>&1
 sleep 2
@@ -87,10 +114,10 @@ lpstat -r >/dev/null 2>&1 || { bad "cupsd 起不来"; exit 1; }
 lpadmin -x $Q >/dev/null 2>&1
 made=0
 for i in 1 2 3; do
-  lpadmin -p $Q -v savefile:/tmp/dummy -P "$PPD" -E 2>/dev/null && { made=1; break; }
+  lpadmin -p $Q -v savefile:$JOB -P "$PPD" -E 2>/dev/null && { made=1; break; }
   sleep 3
 done
-[ $made -eq 1 ] && ok "队列 $Q 就绪" || { bad "lpadmin 失败"; exit 1; }
+[ $made -eq 1 ] && ok "队列 $Q 就绪（设备 URI: savefile:$JOB）" || { bad "lpadmin 失败"; exit 1; }
 
 job_wait() {   # job_wait <作业号>
   jw=0
@@ -104,33 +131,46 @@ job_wait() {   # job_wait <作业号>
 hr "1. 连打 $N 次，逐份分析"
 i=1
 while [ $i -le $N ]; do
-  rm -f /tmp/savefile-*.prn
+  rm -f $JOB
   jid=$(lp -d $Q $TXT 2>&1 | sed -n 's/.*request id is \([^ ]*\).*/\1/p')
   if [ -z "$jid" ]; then bad "第 $i 次提交失败"; break; fi
   job_wait "$jid" || warn "第 $i 次作业 120 秒未结束"
   sleep 1
   got=0
-  for f in /tmp/savefile-*.prn; do
-    [ -f "$f" ] || continue
-    cp "$f" "$OUTDIR/run$i-$(basename "$f")"
+  if [ -f $JOB ] && [ -s $JOB ]; then
+    cp $JOB "$OUTDIR/run$i.prn"
     got=1
-  done
+  fi
   if [ $got -eq 1 ]; then
-    for f in $OUTDIR/run$i-*; do analyse "$f"; done
+    analyse "$OUTDIR/run$i.prn"
   else
-    bad "第 $i 次没有落盘文件"
+    bad "第 $i 次没有落盘文件（期望 $JOB）"
+    if [ -f $OUTDIR/savefile-backend.log ]; then
+      info "backend 日志末 3 行:"
+      tail -3 $OUTDIR/savefile-backend.log | sed 's/^/      /'
+    else
+      info "没有 $OUTDIR/savefile-backend.log —— backend 可能压根没被调用"
+    fi
+    info "backend 在 CUPS 日志里的报错:"
+    grep -a 'savefile' /var/log/cups/error_log 2>/dev/null | grep -aiE 'ERROR|not writable|Permission|failed' | tail -3 | sed 's/^/      /'
+    info "目录权限: $(ls -ld /tmp $OUTDIR 2>&1 | tr '\n' ' ')"
+    info "/tmp 剩余空间: $(df -h /tmp 2>/dev/null | awk 'NR==2{print $4" / 共 "$2}')"
   fi
   i=$((i+1))
 done
 
 hr "2. 一致性对比"
-szs=$(for f in $OUTDIR/run*; do wc -c < "$f"; done | sort -n | uniq | tr '\n' ' ')
-info "各次字节数（去重）: $szs"
-nuniq=$(for f in $OUTDIR/run*; do wc -c < "$f"; done | sort -u | wc -l)
-if [ "$nuniq" -eq 1 ]; then
-  ok "多次结果完全一致 —— 输出确定性，无竞态"
+if ls $OUTDIR/run* >/dev/null 2>&1; then
+  szs=$(for f in $OUTDIR/run*; do wc -c < "$f"; done | sort -n | uniq | tr '\n' ' ')
+  info "各次字节数（去重）: $szs"
+  nuniq=$(for f in $OUTDIR/run*; do wc -c < "$f"; done | sort -u | wc -l)
+  if [ "$nuniq" -eq 1 ]; then
+    ok "多次结果完全一致 —— 输出确定性，无竞态"
+  else
+    warn "多次结果大小不一致（$nuniq 种）—— 存在时序差异，需看 EOJ 是否都齐全"
+  fi
 else
-  warn "多次结果大小不一致（$nuniq 种）—— 存在时序差异，需看 EOJ 是否都齐全"
+  bad "一份样本都没有，跳过一致性对比（先解决第 1 步的落盘问题）"
 fi
 
 hr "3. 收尾"
