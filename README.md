@@ -256,6 +256,7 @@ hp-setup -i      # 连接打印机后配置
 ├── qpdf/
 ├── splix/
 ├── cups-zh/                  # CUPS Web 中文界面包（非 OpenWrt 包，见 7.9）
+├── tools/                    # 路由器端排障脚本（链路自测 / 固件下发 / raster 诊断，见 7.10）
 └── README.md
 ```
 
@@ -431,6 +432,101 @@ foo2zjs-wrapper -z1 -P -L0 noise.ps > noise_f.zjs 2> f.err
 
 `foo2zjs` ipk 自带 `HP-LaserJet_1020.ppd.gz` 与固件转换工具 `arm2hpdl`，同样支持 1005/1018/1020/1022/P1005/P1006/P1505 等。但它**不带固件本体**（`sihp1020.dl` 需要自行获取），安装后需自建 hotplug 规则把 `.dl` 写进 `/dev/usb/lp0`。适合不想引入 HP 专有插件的场景。
 
+#### 7.6.1 走 foo2zjs 时固件怎么加载
+
+先厘清一件事：**灌固件和用哪个驱动打印是两条独立的线，可以混搭**。
+
+| | 可选项 |
+|---|---|
+| 灌固件 | `hp-firmware`（libusb 直写）／`cat *.dl > /dev/usb/lp0`（经 usblp） |
+| 打印 | `hpcups`（hplip 链）／`foo2zjs`（foomatic-rip + foo2zjs-wrapper） |
+
+所以"打印走 foo2zjs、固件用 hplip 的 `hp-firmware` 灌"完全合法，插件已在位时最省事；反过来，纯 foo2zjs 环境（不装 hplip）就得自己生成 `.dl` 并挂 hotplug。
+
+**固件本体三个来源**，按拿到手的难易排序：
+
+```sh
+# ① 已有 hplip 插件里的 .fw.gz（本 feed 实测就在这个位置，70412 字节）
+ls /usr/share/hplip/data/firmware/hp_laserjet_1020.fw.gz
+
+# ② foo2zjs 上游取原始 .img，再转 .dl
+getweb 1020                                   # 需要 wget；产物是 sihp1020.img
+arm2hpdl sihp1020.img > sihp1020.dl
+
+# ③ 别处已有的成品 .dl（1020 与 1020plus 通用）
+```
+
+注意 **hplip 的 `.fw.gz` 和 foo2zjs 的 `.dl` 不是同一种封装**：前者带 hplip 自己的头，直接改名给打印机会被引导程序当垃圾。正确做法是用 `arm2hpdl` 转一道：
+
+```sh
+mkdir -p /lib/firmware/hp
+arm2hpdl /usr/share/hplip/data/firmware/hp_laserjet_1020.fw.gz > /lib/firmware/hp/sihp1020.dl
+# 若 arm2hpdl 只吐 0 字节，改成先解压再喂：
+zcat /usr/share/hplip/data/firmware/hp_laserjet_1020.fw.gz | arm2hpdl > /lib/firmware/hp/sihp1020.dl
+```
+
+转出来要自检两条：**首字节不能是 `1f 8b`**（那是 gzip，没解压），**前 256 字节不能几乎全是可打印文本**（那是 hplip 头没剥掉）。`/lib/firmware` 在 OpenWrt 上落在 overlay 的 upper 层，可写且重启不丢。
+
+**1020 的固件只在 RAM 里，断电即失效** —— 所以 hotplug 不是可选项。OpenWrt 没有 udev，规则放 `/etc/hotplug.d/usb/`（`/var` 是 tmpfs，放那里重启就没）：
+
+```sh
+#!/bin/sh
+# /etc/hotplug.d/usb/20-hp1020-fw
+[ "$ACTION" = "add" ] || exit 0
+case "$PRODUCT" in 3f0/2b17/*|3f0/2b17) ;; *) exit 0 ;; esac
+FW=/lib/firmware/hp/sihp1020.dl
+[ -s "$FW" ] || exit 0
+i=0
+while [ $i -lt 30 ]; do
+  for lp in /dev/usb/lp*; do
+    [ -c "$lp" ] || continue
+    # device/ 是 interface 目录（1-1:1.0），idVendor 在父目录，必须逐级往上找
+    vp=""
+    for d in "/sys/class/usb/${lp##*/}/device" "/sys/class/usb/${lp##*/}/device/.."; do
+      [ -r "$d/idVendor" ] || continue
+      vp="$(cat "$d/idVendor"):$(cat "$d/idProduct")"; break
+    done
+    [ "$vp" = "03f0:2b17" ] || continue
+    # 已加载固件的设备能读出 IEEE-1284 ID，别重复灌
+    command -v usb_printerid >/dev/null && case "$(usb_printerid "$lp" 2>/dev/null)" in
+      *MFG:*|*CMD:*) exit 0 ;;
+    esac
+    cat "$FW" > "$lp" && logger -t hp1020fw "firmware sent to $lp"
+    exit 0
+  done
+  sleep 0.1; i=$((i+1))
+done
+logger -t hp1020fw "no /dev/usb/lp* for 03f0:2b17 (装 kmod-usb-printer 了吗？)"
+```
+
+前置条件就两条：`kmod-usb-printer`（提供 usblp 与 `/dev/usb/lp*`）、`foo2zjs`（提供 `arm2hpdl` 与 `usb_printerid`）。
+
+上面这一整套（找固件、转换、自检、装 hotplug、灌一次并验证）已固化成脚本：
+
+```sh
+scp tools/foo2zjs-fw-setup.sh root@<路由器>:/tmp/
+sh /tmp/foo2zjs-fw-setup.sh            # 只体检：列固件源、试转换、看 usblp、查 1020 在不在
+sh /tmp/foo2zjs-fw-setup.sh --install  # 生成 .dl + 装 hotplug 规则
+sh /tmp/foo2zjs-fw-setup.sh --now      # 再立刻给当前插着的机器灌一次
+sh /tmp/foo2zjs-fw-setup.sh --hplip    # 改用 hp-firmware -y3 -s <bus:dev> 灌（插件已装时首选）
+sh /tmp/foo2zjs-fw-setup.sh --remove   # 卸载 hotplug 规则
+```
+
+脚本第 4 步会打一个决定性判据：**固件灌进去后设备会重新枚举，若新身份下 `/dev/usb/lp*` 消失，说明 usblp 不再绑定，foo2zjs 这条路就走不通**（它只能经 `/dev/usb/lp0` 发数据），应改回 hplip 的 hp backend。这个结论没法离线推断，只有真机能给。
+
+**踩坑记录：`pdf-to-ps exited with status 9`**。CUPS 2.4 + cups-filters 2.x 的内部工作流是 PDF 优先，foomatic-rip 要吃 `application/vnd.cups-postscript`，于是 cupsd 会先 `ps → pdf`（`ps-to-pdf`）再 `pdf → ps`（`pdf-to-ps`）转回来。这台机上第二步返回 9，导致作业「completed」但 backend 只拿到空数据。表现为：**所有 foomatic-rip 型 PPD（整个 foo2zjs 家族）在 cupsd 里都出不了纸**，而 hpcups / brlaser / splix 不受影响（它们从 `application/vnd.cups-raster` 起，走 `pdftoraster`，不经过 `pdf-to-ps`）。定位于：
+
+```sh
+ls -l /usr/lib/cups/filter/pdf-to-ps        # cups-filters 多呼叫二进制的入口
+ls -l /usr/lib/cups/filter/pdftops
+/usr/sbin/cupsfilter -p /usr/share/cups/model/HP-LaserJet_1020.ppd.gz \
+  -i application/postscript /etc/hostname > /tmp/o.zjs 2> /tmp/o.err ; echo rc=$?
+grep -iE 'pdf-to-ps|pdftops|status 9' /tmp/o.err
+```
+
+真机上这一步修不好就别在 foo2zjs 上耗 —— hpcups 那条链已实测能为 1020 产出合法 ZJS 流，foo2zjs 更适合当"不经 CUPS 直接生成数据流"的工具（`test-foo2zjs-1020.sh` 第 2 步就是这么验的）。
+
+
 ### 7.7 Brother 三个包怎么用
 
 | 包 | 内容 | 适用 |
@@ -597,3 +693,100 @@ sh install.sh --restore        # 想回英文
 - 首页正文原来整片是 `help/*.html` 死链，换成「常用入口」+「使用提示」两栏。
 
 已知限制：`opkg upgrade cups` 会覆盖模板，升级后需重跑一次 `install.sh`；`help/` 在线帮助文档未汉化（原始译文包也没做完，几 MB 放路由器 Flash 不划算）。
+
+### 7.10 无真机的链路自测（tools/）
+
+`tools/` 下四个脚本各验一条驱动链，**不需要插打印机**：
+
+| 脚本 | 链路 | 设备流判据 |
+|---|---|---|
+| `test-hplip-1020.sh` | PS → raster → hpcups | `ESC E` + UEL + `@PJL ENTER LANGUAGE=ZJS` + `JZJZ` |
+| `test-foo2zjs-1020.sh` | PS → foo2zjs-wrapper → foo2zjs | `@PJL JOB` + `JZJZ` + `@PJL EOJ`（**无** ENTER LANGUAGE） |
+| `test-brlaser-hl2140.sh` | PS → raster → rastertobrlaser | `@PJL JOB` → `@PJL ENTER LANGUAGE = PCL` → `ESC E` → `@PJL EOJ` |
+| `test-splix-ml2010.sh` | PS → raster → rastertoqpdl | 头 `ESC%-12345X`、尾 `TAB+ESC%-12345X`、中间 QPDL 记录 |
+
+同目录还有 `foo2zjs-fw-setup.sh`（固件下发与 hotplug 互斥，见 7.6.1）和两个定位脚本 `diag-raster.sh` / `probe-gstoraster.sh`。
+
+```sh
+scp tools/*.sh root@<路由器>:/tmp/
+sh /tmp/test-hplip-1020.sh --full      # --full 追加 cupsd 全链路（假 backend 落盘）
+sh /tmp/diag-raster.sh                 # 段1 报错时先跑这个，专查 PS 为什么转不出 raster
+sh /tmp/probe-gstoraster.sh --cups     # 怀疑 gstoraster 崩（rc=139）时跑这个，看作业是否被判失败
+```
+
+两个曾把结论带偏的坑，脚本已按下面的方式绕开：
+
+1. **`cupsfilter -p <ppd>` 在本机 CUPS 2.4 上会停在 PS→PDF。** stderr 会抛 `ppdFilterLoadPPD: Last filter could not get determined`，产物以 `%PDF-1.3` 开头，`gs -sDEVICE=pdfwrite` 的 `%%Invocation` 就写在文件头里。此时后面所有「缺 UEL / 缺 JZJZ」的 FAIL 全是假警报。脚本改为按 cupsd 的真实做法**拆两段**：先 `cupsfilter -m application/vnd.cups-raster`（失败退回直接调 `gstoraster`）拿 CUPS raster，再带 `PPD=` / `DEVICE_URI=` 直接调驱动过滤器（`hpcups` / `rastertobrlaser` / `rastertoqpdl`），参数顺序与 cupsd 一致（`job-id user title copies options file`）。
+2. **假 backend 的输出文件名曾经对不上。** CUPS 传给 backend 的第一个参数是 job-id（如 `11`），不是队列名，旧脚本却去等 `/tmp/savefile-<队列名>.prn`，于是「作业已完成、文件找不到」。现在队列 URI 直接写成 `savefile:/tmp/<tag>/job.prn`，backend 从 `DEVICE_URI` 取路径，落盘位置确定；新建 backend 后向 cupsd 发 `SIGHUP` 让它重扫 backend 目录。
+
+另外两点判读经验：**纯色页体积最小是正常的**（ZJS/QPDL 都是差分编码），验证「编码器真的在按像素干活」必须用噪点页；`cupsfilter` 选错层时四张页的体积会一模一样（都是同一份 PDF），这本身就是「没走到编码器」的信号。
+
+**段1（PS → CUPS raster）失败意味着什么。** hpcups / rastertobrlaser / rastertoqpdl 吃的都是 CUPS raster，这一步由 cups-filters 的 `gstoraster` 完成，`gstoraster` 内部再调 `gs -sDEVICE=cups`。所以只要 gs 的 `cups` 设备不可用，**三个 raster 驱动会同时全哑**，而 foo2zjs 照常工作（它自己调 gs 出 pbmraw）——这是两条链最容易分道扬镳的地方。脚本为此准备了三级退路并打印实际走的是哪条：
+
+| 退路 | 命令 | 说明 |
+|---|---|---|
+| 1 | `cupsfilter -p ppd -m application/vnd.cups-raster` | 走 cups-filters 的正规链 |
+| 2 | `gstoraster 1 root t 1 "PageSize=A4" x.ps` | cupsfilter 内部那一步 |
+| 3 | `gs -sDEVICE=cups -r600 -g4960x7016 -dcupsBitsPerColor=1 -dcupsColorSpace=3` | 绕开 cups-filters 直接调 gs |
+
+三级都失败时先跑 `diag-raster.sh`：它分别验 gs 的 cups 设备、`gstoraster`、`cupsfilter -m`，再把拿到的 raster 喂给三个编码器。
+
+### 7.11 实战排查记录：四个把结论带反的坑（2026-11）
+
+真机（aarch64 OpenWrt，gs 10.08.0，CUPS 2.4.20，cups-filters 2.0.1）上按这套脚本跑，先后踩到四个坑，全都已固化进脚本。它们的共同点是：**报出来的 FAIL 看着像驱动坏了，其实都在脚本自己身上**——真正坏的东西一次都没出现。
+
+**坑一：CUPS raster 的同步字是 `3SaR`，不是 `RaS3`。** 这是最要命的一个——`cups/raster.h` 里 `CUPS_RASTER_SYNC = 0x52615333`（"RaS3"），但文件是按主机字节序写的，**小端机上落盘就是 `33 53 61 52`，即 `3SaR`**。脚本原来只判 `RaS*`，于是所有合法的 raster 都被判成「没出 raster」，段1 永远 FAIL。现在 `is_raster()` 两种字节序都认：
+
+```sh
+case "$(first4 f.raster)" in RaS3|3SaR) ... ;; esac
+```
+
+**坑二：`gstoraster` 退出码 139（SIGSEGV），但它不是 cupsd 用的那个入口。** 本机的 `gstoraster` 在 `Rendering completed`、`gs exited with no errors` 之后仍然段错误退出，产物本身合法（3941714 字节、`3SaR` 开头、页数对）——崩在退出清理，不在渲染。
+
+关键一点：cups-filters 2.0.1 的 `gstoraster` / `pdftoraster` / `universal` / `pstopdf` 等是**同一个多呼叫二进制的不同入口**（所以文件大小几乎一致）。cupsd 实际调用的是 `universal` 入口，它没有这个毛病：
+
+```
+[Job 26] PID 7734 (/usr/lib/cups/filter/universal) exited with no errors.
+[Job 26] Job completed.
+```
+
+`cupsfilter -m` 也走 `universal`，所以它 rc=0，而手工调 `gstoraster` 是 139。结论：**139 只影响这个旧入口，不影响真机打印**；但手工验证要么用 `cupsfilter -m`，要么按 cupsd 的方式用管道，并用子 shell 取真实退出码：
+
+```sh
+( PPD=x gstoraster ... 2> err; echo $? > rc ) | cat > out.raster
+```
+
+`probe-gstoraster.sh` 专测这一点（三种调用方式 + `pdftoraster` 对照 + `--cups` 真跑一页）：
+
+```sh
+sh /tmp/probe-gstoraster.sh           # 只测过滤器：文件 / 管道 / /dev/null
+sh /tmp/probe-gstoraster.sh --cups    # 再用 cupsd + 假 backend 真打一页
+```
+
+**坑三：`lpinfo -v` 列的是「设备」，不是 backend 清单。** 自建的假 backend 无参数调用时直接 `exit 0`（不报设备），所以它永远不会出现在 `lpinfo -v` 里。旧脚本据此判定「cupsd 没扫到 savefile」，结论是错的。正确的证据链是：`error_log` 里出现 `Started backend /usr/lib/cups/backend/savefile` + `lpstat -v <队列>` 里记着 `savefile:/...`。
+
+**坑四：假 backend 是普通用户跑的，写不进 root 建的目录。** 这一条让四份脚本的第 6 步（cupsd 全链路）全部 FAIL，而段1/段2 早已全绿——现象长这样：
+
+```
+[Job 23] /usr/lib/cups/backend/savefile: line 4: can't create /tmp/savefile.log: Permission denied
+[Job 23] /usr/lib/cups/backend/savefile: line 9: can't create /tmp/hplip1020/job.prn: Permission denied
+[Job 23] PID 7182 (/usr/lib/cups/backend/savefile) exited with no errors.
+```
+
+cupsd 以 `lp`（OpenWrt）/ `cups`（发行版）身份执行 backend，`/tmp/<tag>` 是 root 建的 755，进不去；日志写 `/tmp/savefile.log` 也会撞上 root 的 644。连带后果很容易误判：backend 立刻退出 → 上游管道断裂 → `rastertoqpdl` 报 `did not catch or ignore signal 13`（SIGPIPE）、`brlaser: Could not write print data`，看起来像驱动 bug，其实是权限。现在的做法：`chmod 777 $TMP`、日志写在输出文件旁边（`$OUT.log`，backend 自己创建）、backend 里记下 `user=$(id -un)`，失败时先看这一行是谁。
+
+同一台机上的实测数据，可作判读基准（左列均为脚本原样输出）：
+
+| 检查项 | 实测值 | 判读 |
+|---|---|---|
+| `gs --version` / `gs -h` | 10.08.0，含 `cups`/`pwgraster`/`pbmraw` | gs 设备齐全，不是 gs 的问题 |
+| 段1 `cupsfilter -m` | 3941131 字节，头 `3SaR`，rc=0 | raster 层正常 |
+| `gstoraster` 直调 | 3941714 字节，rc=**139** | 崩在退出清理，cupsd 不走这个入口 |
+| `cupsfilter -m` / `pdftoraster` | 均 rc=0 | 与 cupsd 一致的那几条路都好 |
+| hplip 段2 | 3559 字节，含 `ESC E` + `UEL` + `@PJL ENTER LANGUAGE=ZJS` + `JZJZ` | 编码器可用（012 补丁无影响） |
+| brlaser 段2 | 20269 字节，`@PJL JOB` → `ENTER LANGUAGE = PCL` → `ESC E` → `@PJL EOJ` | 编码器可用 |
+| splix 段2 | 12507 字节，首 `ESC%-12345X`、尾 `TAB+ESC%-12345X` | 编码器可用（QPDL 记录齐全） |
+| 内容相关性（空白/噪点） | hplip 487/8231、brlaser 7856/31673、splix 337/311442 | 三条链都在按像素做差分编码 |
+| cupsd 实际跑的过滤器 | `universal` + 驱动过滤器 | 与手工 `gstoraster` 不是同一入口 |
+
+顺带一个打包 bug：`/usr/lib/cups/filter/command2foo2lava-pjl` 是指向 `/home/opc/openwrt/build_dir/...` 的**绝对软链**，装到路由器上必然悬空（它属于 lava 分支，不影响 1020，但说明 foo2zjs 的 install 段有漏改）。修法是打包时用相对软链或直接装实体文件。
