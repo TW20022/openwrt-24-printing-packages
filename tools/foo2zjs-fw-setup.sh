@@ -3,7 +3,9 @@
 #
 # 背景：1020/1005/1018/P1005 这类"软固件"机型，冷启动后 USB 里只是引导程序，
 #       固件在 RAM 里，断电即失效 —— 所以每插一次电都要重灌一次，必须靠 hotplug 自动化。
-#       hplip 的 .fw.gz 与 foo2zjs 的 .dl 不是同一种封装，通常需要 arm2hpdl 转换。
+#       固件封装有两种，别搞混：
+#         · hplip 的 .fw.gz —— gzip 压缩的裸 .dl，zcat 出来直接就是成品（arm2hpdl 喂它只会吐 0 字节）
+#         · getweb 的 .img  —— HP 官方上传格式，内部有 "FW" 头，必须 arm2hpdl 剥头才是 .dl
 #
 # 用法：
 #   sh foo2zjs-fw-setup.sh              # 只体检：找固件源、试转换、检查 usblp，不改任何东西
@@ -65,8 +67,14 @@ FORCE=${FORCE:-0}
 
 # ---------------------------------------------------------------- 0
 hr "0. 环境"
-if [ -d /sys/module/usblp ]; then MOD=已加载; else MOD=未加载; fi
-info "内核 $(uname -r)    usblp 模块：$MOD（固件只能经它写 /dev/usb/lp*，需要 kmod-usb-printer）"
+info "内核 $(uname -r)"
+if [ -d /sys/module/usblp ]; then
+  ok "usblp 已加载 —— /dev/usb/lp* 可用，cat > lp0 那条通道成立"
+else
+  warn "usblp 未加载 —— 没有 /dev/usb/lp*，cat > lp0 那条通道完全不可用"
+  info "装它：opkg update && opkg install kmod-usb-printer，然后 /etc/init.d/cupsd restart"
+  info "libusb 通道（hp-firmware）不受影响，可以先走 --hplip 把固件灌进去"
+fi
 for c in arm2hpdl usb_printerid lsusb hp-firmware zcat hexdump; do
   p=$(command -v $c 2>/dev/null)
   if [ -n "$p" ]; then info "$(printf '%-14s' $c) $p"; else info "$(printf '%-14s' $c) 未安装"; fi
@@ -93,9 +101,19 @@ else
   for d in /sys/bus/usb/devices/*/; do
     [ -r "$d/idVendor" ] || continue
     v=$(cat "$d/idVendor" 2>/dev/null); p=$(cat "$d/idProduct" 2>/dev/null)
-    [ "$v" = "$VENDOR" ] && info "现场其它 HP 设备：${d%/}  $v:$p"
+    [ "$v" = "$VENDOR" ] || continue
+    # 认一下机型，省得对着插错的机器反复灌固件（3217 是本 feed 实测踩过的）
+    case "$p" in
+      2b17) why="  <- LaserJet 1020/1020plus，正是本脚本的目标" ;;
+      3217) why="  <- LaserJet 3050：PCL5 完整机型，自带固件，不需要也灌不进 .dl，本脚本对它无效" ;;
+      4117) why="  <- LaserJet 1018：ZJS，但固件是 sihp1018.dl，型号常量不同" ;;
+      3d17) why="  <- LaserJet P1005：ZJS，固件 sihpP1005.dl，型号常量不同" ;;
+      3e17) why="  <- LaserJet P1006：ZJS，固件 sihpP1006.dl，型号常量不同" ;;
+      *)    why="" ;;
+    esac
+    info "现场其它 HP 设备：${d%/}  $v:$p$why"
   done
-  info "1020 / 1020plus 的 PID 都是 2b17；若上面列出的 HP 设备 PID 不是它，说明机型不同，别套用本脚本的型号常量"
+  info "本脚本的型号常量是 $VENDOR:$PRODUCT（LaserJet 1020）；上面若没有 2b17，就别往下灌固件，灌错固件会让设备挂死"
 fi
 
 # 取 /dev/usb/lpN 对应设备的 vid:pid。
@@ -117,7 +135,7 @@ SRC=""
 for c in "$DL" /usr/share/foo2zjs/firmware/sihp1020.dl /lib/firmware/sihp1020.dl "$FWGZ"; do
   [ -s "$c" ] || continue
   if [ "$c" = "$FWGZ" ]; then
-    info "候选：$c（hplip 的 .fw.gz，$(sz "$c") 字节 —— 需要转换，不是 .dl）"
+    info "候选：$c（hplip 的 .fw.gz，$(sz "$c") 字节 —— gzip 压缩的裸 .dl，解压即成品，不需要 arm2hpdl）"
     [ -z "$SRC" ] && SRC=$c
   else
     ok "候选：$c（$(sz "$c") 字节，头 $(head_hex "$c")）"
@@ -133,11 +151,23 @@ MADE=""
 if [ -s "$DL" ]; then
   ok "已是成品：$DL（$(sz "$DL") 字节）"; MADE=$DL
 elif [ "$SRC" = "$FWGZ" ]; then
-  if ! command -v arm2hpdl >/dev/null 2>&1; then
-    bad "没有 arm2hpdl —— 它由 foo2zjs 包提供，先 opkg install foo2zjs"
+  mkdir -p "${DL%/*}" 2>/dev/null
+  # 路线 A（首选）：hplip 的 .fw.gz 就是 gzip 压缩的裸 .dl，zcat 出来直接是成品。
+  # 实测：把 .fw.gz 喂给 arm2hpdl（无论直接喂还是 zcat 后喂）都只吐 0 字节 ——
+  #       arm2hpdl 只认 HP 官方的 .img（内部有 "FW" 头），不认 hplip 的封装。
+  out=/tmp/.sihp1020.try
+  zcat "$SRC" > "$out" 2>/dev/null
+  n=$(sz "$out")
+  if [ "${n:-0}" -gt 10240 ]; then
+    cp "$out" "$DL" && MADE=$DL
+    ok "直接解压成功（zcat，不经 arm2hpdl）：$n 字节，头 $(head_hex "$DL")"
   else
-    mkdir -p "${DL%/*}" 2>/dev/null
-    # arm2hpdl 对输入格式有要求：既能吃 .gz 也能吃解压后的 .fw，逐个试
+    info "不行：zcat 只出了 ${n:-0} 字节（不是纯 gzip 的 .dl？）"
+  fi
+  rm -f "$out"
+
+  # 路线 B（退路）：万一这份 .fw.gz 其实是 .img 换了外壳，再让 arm2hpdl 试一遍
+  if [ -z "$MADE" ] && command -v arm2hpdl >/dev/null 2>&1; then
     for how in "arm2hpdl $SRC" "zcat $SRC | arm2hpdl"; do
       out=/tmp/.sihp1020.try
       if [ "$how" = "zcat $SRC | arm2hpdl" ]; then
@@ -148,18 +178,20 @@ elif [ "$SRC" = "$FWGZ" ]; then
       n=$(sz "$out")
       if [ "${n:-0}" -gt 10240 ]; then
         cp "$out" "$DL" && MADE=$DL
-        ok "转换成功（$how）：$(sz "$DL") 字节，头 $(head_hex "$DL")"
+        ok "arm2hpdl 转换成功（$how）：$(sz "$DL") 字节，头 $(head_hex "$DL")"
         break
       else
         info "不行：$how 只出了 ${n:-0} 字节"
       fi
     done
     rm -f /tmp/.sihp1020.try
-    if [ -z "$MADE" ]; then
-      bad "arm2hpdl 两种输入方式都失败 —— 这份 .fw 可能不是它认识的封装"
-      info "改用 getweb 直接取原始 .img：getweb 1020（需要 wget，脚本在 /usr/bin/getweb）"
-      info "或直接走 --hplip 模式，用 hp-firmware 下发（插件已装时最省事）"
-    fi
+  fi
+
+  if [ -z "$MADE" ]; then
+    bad "zcat 直通与 arm2hpdl 都没出成品"
+    info "zcat 失败 = 它不是纯 gzip 的 .dl；arm2hpdl 失败 = 它也不是 HP 官方 .img"
+    info "改用 getweb 取原始 .img：getweb 1020，再 arm2hpdl sihp1020.img > $DL"
+    info "或直接走 --hplip 模式，让 hp-firmware 自己解 .fw.gz（插件已装时最省事）"
   fi
 else
   cp "$SRC" "$DL" 2>/dev/null && MADE=$DL && ok "已拷到 $DL"

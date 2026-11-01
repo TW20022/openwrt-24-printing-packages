@@ -456,16 +456,26 @@ arm2hpdl sihp1020.img > sihp1020.dl
 # ③ 别处已有的成品 .dl（1020 与 1020plus 通用）
 ```
 
-注意 **hplip 的 `.fw.gz` 和 foo2zjs 的 `.dl` 不是同一种封装**：前者带 hplip 自己的头，直接改名给打印机会被引导程序当垃圾。正确做法是用 `arm2hpdl` 转一道：
+注意 **hplip 的 `.fw.gz` 和 `getweb` 的 `.img` 是两种不同的封装，处理方式不一样**：
+
+| 来源 | 内部结构 | 正确做法 |
+|---|---|---|
+| hplip 的 `hp_laserjet_1020.fw.gz` | gzip 压缩的**裸 `.dl`** | `zcat` 解压即成品 |
+| `getweb 1020` 的 `sihp1020.img` | HP 官方上传格式，内部有 `FW` 头 | `arm2hpdl` 剥头才成 `.dl` |
+
+**别把 `.fw.gz` 喂给 `arm2hpdl`**。它只认 `FW` 头，实测直接喂、`zcat` 后喂都是 **0 字节** —— 脚本早期版本那句 `[FAIL] arm2hpdl 两种输入方式都失败` 就是这么来的（2026-11-01 真机复现，机型 3050 上跑的体检）。正确命令：
 
 ```sh
 mkdir -p /lib/firmware/hp
-arm2hpdl /usr/share/hplip/data/firmware/hp_laserjet_1020.fw.gz > /lib/firmware/hp/sihp1020.dl
-# 若 arm2hpdl 只吐 0 字节，改成先解压再喂：
-zcat /usr/share/hplip/data/firmware/hp_laserjet_1020.fw.gz | arm2hpdl > /lib/firmware/hp/sihp1020.dl
+
+# 从 hplip 插件取（最省事，插件装过就有）
+zcat /usr/share/hplip/data/firmware/hp_laserjet_1020.fw.gz > /lib/firmware/hp/sihp1020.dl
+
+# 或从 getweb 的 .img 转
+getweb 1020 && arm2hpdl sihp1020.img > /lib/firmware/hp/sihp1020.dl
 ```
 
-转出来要自检两条：**首字节不能是 `1f 8b`**（那是 gzip，没解压），**前 256 字节不能几乎全是可打印文本**（那是 hplip 头没剥掉）。`/lib/firmware` 在 OpenWrt 上落在 overlay 的 upper 层，可写且重启不丢。
+成品要自检三条：**大小过 10240 字节**（0 字节就是转换失败）、**首字节不能是 `1f 8b`**（那是 gzip 没解压）、**前 256 字节不能几乎全是可打印文本**（那是 hplip 头没剥掉）。`/lib/firmware` 在 OpenWrt 上落在 overlay 的 upper 层，可写且重启不丢。
 
 **1020 的固件只在 RAM 里，断电即失效** —— 所以 hotplug 不是可选项。OpenWrt 没有 udev，规则放 `/etc/hotplug.d/usb/`（`/var` 是 tmpfs，放那里重启就没）：
 
@@ -731,9 +741,9 @@ sh /tmp/probe-gstoraster.sh --cups     # 怀疑 gstoraster 崩（rc=139）时跑
 
 三级都失败时先跑 `diag-raster.sh`：它分别验 gs 的 cups 设备、`gstoraster`、`cupsfilter -m`，再把拿到的 raster 喂给三个编码器。
 
-### 7.11 实战排查记录：四个把结论带反的坑（2026-11）
+### 7.11 实战排查记录：五个把结论带反的坑（2026-11）
 
-真机（aarch64 OpenWrt，gs 10.08.0，CUPS 2.4.20，cups-filters 2.0.1）上按这套脚本跑，先后踩到四个坑，全都已固化进脚本。它们的共同点是：**报出来的 FAIL 看着像驱动坏了，其实都在脚本自己身上**——真正坏的东西一次都没出现。
+真机（aarch64 OpenWrt，gs 10.08.0，CUPS 2.4.20，cups-filters 2.0.1）上按这套脚本跑，先后踩到五个坑，全都已固化进脚本。它们的共同点是：**报出来的 FAIL 看着像驱动坏了，其实都在脚本自己身上**——真正坏的东西一次都没出现。
 
 **坑一：CUPS raster 的同步字是 `3SaR`，不是 `RaS3`。** 这是最要命的一个——`cups/raster.h` 里 `CUPS_RASTER_SYNC = 0x52615333`（"RaS3"），但文件是按主机字节序写的，**小端机上落盘就是 `33 53 61 52`，即 `3SaR`**。脚本原来只判 `RaS*`，于是所有合法的 raster 都被判成「没出 raster」，段1 永远 FAIL。现在 `is_raster()` 两种字节序都认：
 
@@ -774,6 +784,23 @@ sh /tmp/probe-gstoraster.sh --cups    # 再用 cupsd + 假 backend 真打一页
 ```
 
 cupsd 以 `lp`（OpenWrt）/ `cups`（发行版）身份执行 backend，`/tmp/<tag>` 是 root 建的 755，进不去；日志写 `/tmp/savefile.log` 也会撞上 root 的 644。连带后果很容易误判：backend 立刻退出 → 上游管道断裂 → `rastertoqpdl` 报 `did not catch or ignore signal 13`（SIGPIPE）、`brlaser: Could not write print data`，看起来像驱动 bug，其实是权限。现在的做法：`chmod 777 $TMP`、日志写在输出文件旁边（`$OUT.log`，backend 自己创建）、backend 里记下 `user=$(id -un)`，失败时先看这一行是谁。
+
+**坑五：固件转换吐 0 字节，其实是转换器选错了；同一份输出里还藏着「插的是另一台机器」。** 真实的体检输出长这样：
+
+```
+---- 候选：/usr/share/hplip/data/firmware/hp_laserjet_1020.fw.gz（70412 字节）
+---- 不行：arm2hpdl /usr/share/hplip/data/firmware/hp_laserjet_1020.fw.gz 只出了 0 字节
+---- 不行：zcat ... | arm2hpdl 只出了 0 字节
+[FAIL] arm2hpdl 两种输入方式都失败 —— 这份 .fw 可能不是它认识的封装
+---- 现场其它 HP 设备：/sys/bus/usb/devices/1-1  03f0:3217
+```
+
+两个问题叠在一起：
+
+1. **`.fw.gz` 不该给 `arm2hpdl`**。它只认 HP 官方 `.img`（内部 `FW` 头），喂 hplip 的封装必然 0 字节。`.fw.gz` 是 gzip 压缩的裸 `.dl`，`zcat` 出来直接就是成品（见 7.6.1）。文件从没坏过。
+2. **`03f0:3217` 是 LaserJet 3050，不是 1020（`2b17`）**。3050 是 PCL5 完整机型，固件在机器里，压根不需要灌 `.dl` —— 对着它跑这套脚本，每一步都会"顺利"地什么都不发生，而 `[FAIL]` 会把人往"固件坏了"的方向带。型号对照：`2b17`=1020/1020plus、`3217`=3050、`4117`=1018、`3d17`=P1005、`3e17`=P1006。
+
+脚本现在两处都改了：第 0 步按 PID 报出机型名并提示「上面若没有 2b17，就别往下灌固件，灌错固件会让设备挂死」；第 2 步优先 `zcat` 直通，`arm2hpdl` 退为第二条路。另外 `usblp` 未加载时不再只打一行 `----`，而是明确给出 `opkg install kmod-usb-printer`，并注明 libusb 通道（`--hplip`）不受影响。
 
 同一台机上的实测数据，可作判读基准（左列均为脚本原样输出）：
 
