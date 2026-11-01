@@ -7,7 +7,7 @@ OpenWrt 24.10.8 `armsr/armv8` 打印软件包 feed，由两个上游仓库合并
 | 来源 | 处理方式 |
 |---|---|
 | [woniuzfb/openwrt-24-printing-packages](https://github.com/woniuzfb/openwrt-24-printing-packages) | `hplip`（3.25.6，含 12 个本地补丁）、`python3-dbus`（1.4.0）保留此版本 |
-| [TW20022/openwrt-24-printing-packages](https://github.com/TW20022/openwrt-24-printing-packages) | 其余全部包覆盖/新增（版本更新 + 新增打印机驱动与字体） |
+| TW20022 原 feed（已删除，内容并入本仓库） | 其余全部包覆盖/新增（版本更新 + 新增打印机驱动与字体） |
 
 - `hplip` 采用 woniuzfb 3.25.6，因为 TW20022 的 hplip 是旧版 3.18.6，且 3.25.6 已在 aarch64 上验证通过（含禁用 x86 专用 libImageProcessor 的补丁）。
 - 合并时保留各包自带的 `patches/` 目录，另有若干本地修复补丁（见第四节）。
