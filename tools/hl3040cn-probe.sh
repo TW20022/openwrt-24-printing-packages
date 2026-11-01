@@ -1,6 +1,6 @@
 #!/bin/sh
 # ============================================================
-# Brother HL-3040CN 打印数据完整性探针 v4（无需真实打印机）
+# Brother HL-3040CN 打印数据完整性探针 v5（无需真实打印机）
 #
 #   hl3040cn-selftest.sh 只回答"链路通不通"，本脚本回答"数据整不整"：
 #   同一份文档连打 N 次，逐份统计 PJL 结构，判断是整页输出还是被截断。
@@ -22,6 +22,9 @@
 #   v4: 一致性判据从"整文件大小相同"改为"数据段指纹相同"。
 #       PJL 头里有打印时间戳（@PJL PRINTLOG ITEM = 2,...），每次必然不同，
 #       长度还会差 1 字节，用整文件大小比对会误报"存在时序差异"
+#   v5: 设备的 busybox grep 没有 -b，v4 靠 grep -abo 取偏移的做法失效，
+#       指纹退化成整文件、三个样本被判成三种。改为"从 EOF 往前取等长窗口"
+#       做指纹：头部变长变短都不影响，尾部被截断则立刻不等
 # ============================================================
 PPD=/usr/share/ppd/hl3040cn.ppd
 [ -f "$PPD" ] || PPD=/usr/share/cups/model/brother/hl3040cn.ppd
@@ -44,19 +47,32 @@ cnt() { grep -a -o -- "$2" "$1" 2>/dev/null | wc -l | tr -d ' '; }
 # 尾部 120 字节可读化
 tailview() { tail -c 120 "$1" | tr -c '[:print:]\n' '.'; }
 
-# 数据块在文件里的字节偏移（') BROTHER XL2HB;' 第一次出现的位置）
-# 之前的部分是 PJL 头，里面带打印时间戳，每次必然不同，不能参与比对
-hoff() { grep -abo ') BROTHER XL2HB;' "$1" 2>/dev/null | head -1 | cut -d: -f1; }
-
-# 压缩数据段的指纹：从数据块标记开始到文件末尾
-# 同一张图 + 同样的参数，这一段必须逐字节相同
+# 压缩数据段的指纹。
+# 不能从文件头往后切：PJL 头里有打印时间戳（@PJL PRINTLOG ITEM = 2,...），
+# 每次不同，而且字符串长度偶尔差 1 字节，一旦按固定偏移切就会整体错位。
+# 改成"从文件末尾往前取同样多的字节"——EOF 对齐，头部怎么变都不影响，
+# 数据被截断则会立刻体现在这段尾部上。
+# 设备上的 busybox grep 没有 -b，所以也不能靠 grep 算偏移。
 sig() {
-  s_off=$(hoff "$1")
-  if [ -n "$s_off" ]; then
-    dd if="$1" bs=1 skip="$s_off" 2>/dev/null | md5sum | cut -d' ' -f1
+  [ -n "$SIGLEN" ] || { md5sum "$1" 2>/dev/null | cut -d' ' -f1; return; }
+  tail -c "$SIGLEN" "$1" 2>/dev/null | md5sum | cut -d' ' -f1
+}
+
+# 计算比对窗口：所有样本里最短的那份，再留 700 字节给 PJL 头
+sig_window() {
+  min=0
+  for w in "$@"; do
+    s=$(wc -c < "$w")
+    if [ "$min" -eq 0 ] || [ "$s" -lt "$min" ]; then
+      min=$s
+    fi
+  done
+  if [ "$min" -gt 4096 ]; then
+    SIGLEN=$((min - 700))
   else
-    md5sum "$1" 2>/dev/null | cut -d' ' -f1     # 退化：整文件（含时间戳）
+    SIGLEN=$((min / 2))
   fi
+  [ "$SIGLEN" -ge 256 ] || SIGLEN=""
 }
 
 # 分析一份落盘文件
@@ -184,18 +200,20 @@ if ls $OUTDIR/run* >/dev/null 2>&1; then
   info "各次字节数（去重）: $szs"
 
   # 再比压缩数据段指纹 —— 这才是"输出是否确定性"的真正判据
+  sig_window $OUTDIR/run*
+  if [ -n "$SIGLEN" ]; then
+    info "比对窗口: 各文件末尾 $SIGLEN 字节（EOF 对齐，跳过 PJL 头）"
+  else
+    info "样本太小，比对窗口退化为整文件"
+  fi
+
   sigs=""
-  printf '  %-10s %8s %6s  %s\n' file bytes hdr md5
+  printf '  %-10s %8s  %s\n' file bytes md5
   for f in $OUTDIR/run*; do
-    o=$(hoff "$f")
-    printf '  %-10s %8s %8s  %s\n' "$(basename "$f")" "$(wc -c < "$f")" "${o:-?}" "$(sig "$f")"
+    printf '  %-10s %8s  %s\n' "$(basename "$f")" "$(wc -c < "$f")" "$(sig "$f")"
     sigs="$sigs $(sig "$f")"
   done
   nsig=$(printf '%s\n' $sigs | sort -u | wc -l | tr -d ' ')
-
-  if [ -z "$(hoff "$(ls $OUTDIR/run* | head -1)")" ]; then
-    info "提示：当前 grep 不支持 -b，取不到数据段偏移，指纹退化为整文件（时间戳不同就会判为不一致）"
-  fi
 
   if [ "$nsig" -eq 1 ]; then
     ok "数据段完全一致 —— 输出确定性，无竞态、无丢字节"
@@ -203,11 +221,12 @@ if ls $OUTDIR/run* >/dev/null 2>&1; then
     if [ "$nsz" -gt 1 ]; then
       info "整文件大小有 $nsz 种（相差几字节），来自 PJL 头里的打印时间戳："
       grep -ah 'PRINTLOG ITEM = 2' $OUTDIR/run* 2>/dev/null | sed 's/^/      /'
-      info "时间戳字符串长度会随秒数变化（如 9:05 与 10:05），属正常，不是数据丢失"
+      info "时间戳字符串长度会差 1 字节，属正常，不是数据丢失"
     fi
   else
     warn "数据段指纹有 $nsig 种 —— 同样的输入产出了不同的压缩数据，需查时序/丢字节"
     info "可能性：cupswrapper 短写（r2 已修）、box86 竞态、CUPS 送来的 raster 不一致"
+    info "可对比两次的差异位置： tail -c $SIGLEN run1.prn > /tmp/a ; diff 或 cmp -l"
   fi
 else
   bad "一份样本都没有，跳过一致性对比（先解决第 1 步的落盘问题）"
