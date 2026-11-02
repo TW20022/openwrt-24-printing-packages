@@ -8,7 +8,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=hplip
 PKG_VERSION:=3.25.6
-PKG_RELEASE:=1
+PKG_RELEASE:=3
 
 PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.gz
 PKG_SOURCE_URL:=@SF/$(PKG_NAME)
@@ -90,6 +90,7 @@ CONFIGURE_ARGS += \
 define Build/Configure
 	$(call Build/Configure/Default, \
 		PYTHON=$(STAGING_DIR_HOSTPKG)/bin/python3 \
+		PYTHONINCLUDEDIR=$(STAGING_DIR)/usr/include/python$(PYTHON3_VERSION) \
 	)
 	$(INSTALL_DIR) $(PKG_INSTALL_DIR)/usr/share/sane
 	sed -n -e '/key="usb.product_id"/{s/.*int_outof="0x//;s/;0x/\n/g;s/".*//;p}' \

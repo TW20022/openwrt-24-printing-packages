@@ -15,8 +15,14 @@ PKG_BUILD_DEPENDS:=python3/host
 include $(INCLUDE_DIR)/package.mk
 include $(TOPDIR)/feeds/packages/lang/python/python3-version.mk
 
-TARGET_CFLAGS += -I$(STAGING_DIR)/usr/include/python$(PYTHON3_VERSION)
+TARGET_CFLAGS := -I$(STAGING_DIR)/usr/include/python$(PYTHON3_VERSION) $(TARGET_CFLAGS)
 TARGET_LDFLAGS += -L$(STAGING_DIR)/usr/lib -lpython$(PYTHON3_VERSION)
+
+# 强制 configure 使用 target python 头/库（默认探测会命中 hostpkg 的 x86_64 python 头，
+# 导致 pyport.h LONG_BIT #error）
+CONFIGURE_VARS += \
+	PYTHON_CPPFLAGS="-I$(STAGING_DIR)/usr/include/python$(PYTHON3_VERSION)" \
+	PYTHON_LIBS="-L$(STAGING_DIR)/usr/lib -lpython$(PYTHON3_VERSION)"
 
 define Package/python3-dbus
 	SECTION:=net
