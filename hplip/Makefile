@@ -8,7 +8,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=hplip
 PKG_VERSION:=3.25.6
-PKG_RELEASE:=3
+PKG_RELEASE:=10
 
 PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.gz
 PKG_SOURCE_URL:=@SF/$(PKG_NAME)
@@ -16,6 +16,9 @@ PKG_HASH:=a6af314a7af0572f2ab6967b2fe68760e64d74628ef0e6237f8504d81047edbe
 
 PKG_BUILD_DEPENDS:=python3 cups cups-filters
 PKG_FIXUP:=autoreconf
+
+# GCC 14 将隐式函数声明视为错误；musl 的 strcasestr 仅在 _GNU_SOURCE 下可见
+TARGET_CFLAGS += -D_GNU_SOURCE
 PKG_INSTALL:=1
 
 include $(INCLUDE_DIR)/package.mk
