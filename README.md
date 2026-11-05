@@ -381,6 +381,7 @@ mkdir -p /etc/hplip && cp /var/lib/hp/hplip.state /etc/hplip.state && chmod 644 
 rm -f /var/lib/hp/hplip.state && ln -s /etc/hplip.state /var/lib/hp/hplip.state
 sed -i '/^exit 0/i [ -e /var/lib/hp/hplip.state ] || { mkdir -p /var/lib/hp; ln -sf /etc/hplip.state /var/lib/hp/hplip.state; }' /etc/rc.local
 ```
+> 已封装：`tools/hplip-fw-deploy.sh --persist`（软链 + `05-hplip-state` 自愈补链 + version 对齐）；同一脚本还能把插件里的 13 个 `.fw.gz` 补进 `data/firmware/` —— 本 feed 的 hplip 包不带它们，缺了 `hp-firmware` 必报 `Firmware file ... not found`。
 
 **离线验证 ZJS 编码器（没有 1020 硬件也能做）★**
 
