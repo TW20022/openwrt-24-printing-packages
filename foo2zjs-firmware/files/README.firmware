@@ -1,0 +1,68 @@
+foo2zjs-firmware —— HP ZJS 打印机的固件热插拔下发
+================================================
+
+一、它解决什么问题
+------------------
+HP LaserJet 1000/1005/1018/1020、P1005/P1006/P1007/P1008/P1009/P1505 这批机器
+主板上没有 flash，固件只跑在 RAM 里。冷启动时它是个"哑"设备（bootloader 状态），
+必须由主机把固件灌进去，才会变成能接收打印作业的打印机。断电后固件消失，
+下次上电要重灌。
+
+本包在 USB 热插拔时自动完成这件事；没有它，就得每次手动 cat 一遍。
+
+二、固件不在包里（重要）
+------------------------
+这 11 款机型的固件是 HP 专有许可（只授权配合 HP 打印机使用），本包不包含、
+也不下载任何固件文件。你需要自己把下列文件放到 /lib/firmware/hp/：
+
+    sihp1000.dl    LJ 1000        (03f0:0517)
+    sihp1005.dl    LJ 1005        (03f0:1317)
+    sihp1018.dl    LJ 1018        (03f0:4117)
+    sihp1020.dl    LJ 1020        (03f0:2b17)
+    sihpP1005.dl   P1005 / P1007  (03f0:3d17 / 03f0:4817)
+    sihpP1006.dl   P1006 / P1008 / P1009  (03f0:3e17 / 03f0:4917)
+    sihpP1505.dl   P1505          (03f0:3f17)
+
+来源：hplip 插件包（hplip-x.y.z-plugin.run）里的
+      plugin_tmp/hp_laserjet_*.fw.gz，逐个 `zcat` 出来改名即可，字节完全等价；
+      或 foo2zjs 上游 `getweb` 生成。
+
+一次性部署（目录或 tar.gz 都行）：
+    foo2zjs-fw install-fw /tmp/firmware-dl.tar.gz
+
+三、命令
+--------
+    foo2zjs-fw status                 看已连接设备、PID、型号、FWVER、固件是否就位
+    foo2zjs-fw load                   给所有未灌的设备灌一次
+    foo2zjs-fw load /dev/usb/lp0      只灌指定设备
+    foo2zjs-fw load --force           忽略 FWVER 强制重灌
+    foo2zjs-fw list                   PID -> 固件 对照表
+    foo2zjs-fw install-fw <path>      部署 .dl 到 /lib/firmware/hp
+    foo2zjs-fw enable / disable       开/关热插拔自动下发
+
+四、自动下发怎么判断"要不要灌"
+------------------------------
+1. 先读 IEEE-1284 ID，里面有 FWVER 就说明固件已在，跳过。
+2. 没有 FWVER，按冷启动 PID 选固件。
+3. P 系列灌完后 PID 会变成 4117（和 1018 撞号）。这时如果 FWVER 还没读出来，
+   用 /var/run/foo2zjs-fw/ 里 120 秒内的"刚灌过"标记兜底；并且只要 ID 里能
+   认出是 P 系列，就绝不会灌 1018 的固件。
+
+五、与 hplip 的关系
+------------------
+hplip 的 /etc/hotplug.d/usb/10-hp-printer 走 libusb 直写，本包走 usblp
+（/dev/usb/lpN）。两条通道同时写同一台设备会把设备写僵。
+检测到 hplip 那条规则且 /usr/bin/hp-config_usb_printer 存在时，本包默认不动手。
+确实要接管，改 /etc/config/foo2zjs-fw：
+
+    option coexist '1'
+
+六、日志
+--------
+    logread | grep foo2zjs-fw
+
+七、注意
+--------
+* 只在 usblp 可用时工作（kmod-usb-printer），不需要 CUPS 队列配合。
+* 固件灌完不会持久化到打印机，断电即失，这是硬件特性，不是配置问题。
+* 灌固件期间不要同时发打印作业。

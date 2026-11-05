@@ -1,0 +1,374 @@
+#!/bin/sh
+#
+# foo2zjs-fw - HP ZJS 打印机固件下发工具（OpenWrt）
+#
+# 适用机型（板子无 flash，固件只跑在 RAM，断电即失）：
+#   LJ 1000 / 1005 / 1018 / 1020 / P1005 / P1006 / P1007 / P1008 / P1009 / P1505
+#
+# 用法：
+#   foo2zjs-fw status                 查看已连接的打印机与固件状态
+#   foo2zjs-fw load [dev] [--force]   手动灌固件（默认全部未灌的）
+#   foo2zjs-fw list                   PID -> 固件 映射表
+#   foo2zjs-fw install-fw <path>      把 .dl 部署到 /lib/firmware/hp（目录或 tar.gz）
+#   foo2zjs-fw enable|disable         开/关自动下发
+#   foo2zjs-fw handle                 热插拔入口（由 20-foo2zjs-fw 调用）
+#
+# 设计要点：
+#  1. 固件不是本包的一部分。HP 只授权配合 HP 打印机使用，需用户自行放入
+#     /lib/firmware/hp/sihpXXXX.dl。
+#  2. 去重靠 IEEE-1284 ID 里的 FWVER。P 系列灌完后 PID 会变成 4117（与 1018
+#     撞号），此时若读不到 FWVER，会再用 /var/run 里的"刚灌过"标记兜底，
+#     避免把 1018 的固件灌进 P1005/P1006/P1505。
+#  3. 写固件走 usblp（/dev/usb/lpN），与 hplip 的 libusb 通道互斥。检测到
+#     hplip 那条规则在时默认不动手。
+#
+
+PROG=foo2zjs-fw
+FWDIR=${FWDIR:-/lib/firmware/hp}
+RUNDIR=${RUNDIR:-/var/run/foo2zjs-fw}
+LOCKDIR=${LOCKDIR:-/var/lock/foo2zjs-fw.lock}
+SYSFS=${SYSFS:-/sys}
+DEVDIR=${DEVDIR:-/dev}
+PRINTERID=${PRINTERID:-/usr/bin/usb_printerid}
+HPLIP_RULE=${HPLIP_RULE:-/etc/hotplug.d/usb/10-hp-printer}
+
+log() {
+	# 手动执行（tty）或显式 VERBOSE=1 时打到屏幕；hotplug 调用只进 syslog
+	if [ -t 1 ] || [ -n "$FOO2ZJS_FW_VERBOSE" ]; then
+		echo "$*"
+	fi
+	command -v logger >/dev/null 2>&1 && logger -t "$PROG" "$*" 2>/dev/null
+}
+
+say() { echo "$*"; }
+
+cfg() {
+	_v=""
+	if command -v uci >/dev/null 2>&1; then
+		_v=$(uci -q get "foo2zjs-fw.main.$1" 2>/dev/null)
+	fi
+	[ -n "$_v" ] || _v="$2"
+	echo "$_v"
+}
+
+# 输出：dev|vid|pid|usbdir，按 dev 去重
+find_printers() {
+	for base in "$SYSFS/class/usbmisc" "$SYSFS/class/usb"; do
+		[ -d "$base" ] || continue
+		for d in "$base"/lp*; do
+			[ -e "$d" ] || continue
+			# usblp 的节点在 /dev/usb/lpN，老内核也可能是 /dev/lpN
+			dev="$DEVDIR/usb/$(basename "$d")"
+			[ -e "$dev" ] || dev="$DEVDIR/$(basename "$d")"
+			[ -e "$dev" ] || continue
+			iface=$(cd "$d/device" 2>/dev/null && pwd -P)
+			[ -n "$iface" ] || continue
+			usb=$(dirname "$iface")
+			vid=$(cat "$usb/idVendor" 2>/dev/null)
+			pid=$(cat "$usb/idProduct" 2>/dev/null)
+			[ -n "$vid" ] || continue
+			echo "$dev|$vid|$pid|$usb"
+		done
+	done | sort -u
+}
+
+id_of() {
+	[ -x "$PRINTERID" ] || return 0
+	"$PRINTERID" "$1" 2>/dev/null | tr -d '\r' | tr '\n' ' '
+}
+
+is_loaded() { echo "$1" | grep -q 'FWVER'; }
+
+model_of() {
+	echo "$1" | sed -n 's/.*MDL:\([^;]*\).*/\1/p' | head -1
+}
+
+# PID -> 固件文件名
+fw_for() {
+	_pid=$1; _id=$2
+	case "$_pid" in
+	0517) echo sihp1000.dl ;;
+	1317) echo sihp1005.dl ;;
+	2b17) echo sihp1020.dl ;;
+	3d17) echo sihpP1005.dl ;;
+	3e17) echo sihpP1006.dl ;;
+	3f17) echo sihpP1505.dl ;;
+	4817) echo sihpP1005.dl ;;	# P1007 用 P1005 固件（上游别名）
+	4917) echo sihpP1006.dl ;;	# P1008 用 P1006 固件
+	4117)
+		# 1018 冷启动就是 4117；P 系列灌完也变 4117。
+		# ID 里能认出是 P 系列就绝不能灌 1018 的固件。
+		case "$_id" in
+		*P1005*|*P1006*|*P1007*|*P1008*|*P1009*|*P1102*|*P1566*|*P1505*)
+			echo "" ;;
+		*) echo sihp1018.dl ;;
+		esac
+		;;
+	*) echo "" ;;
+	esac
+}
+
+state_key() {
+	_sn=$(cat "$3/serial" 2>/dev/null)
+	if [ -n "$_sn" ]; then
+		echo "$1.$2.$_sn"
+	else
+		echo "$1.$2.$(basename "$3")"
+	fi
+}
+
+mark_seen() {
+	mkdir -p "$RUNDIR" 2>/dev/null
+	: > "$RUNDIR/$1" 2>/dev/null
+}
+
+# 120 秒内视为"刚灌过"：覆盖 PID 变化后立刻重新枚举、但 FWVER 还没读出来的空窗
+seen_recent() {
+	_f="$RUNDIR/$1"
+	[ -e "$_f" ] || return 1
+	_mt=$(stat -c %Y "$_f" 2>/dev/null)
+	_now=$(date +%s)
+	if [ -n "$_mt" ]; then
+		[ $((_now - _mt)) -lt 120 ] && return 0
+		return 1
+	fi
+	# 读不到时间戳时保守跳过：宁可少灌一次，也不要把 1018 的固件灌进已灌过的 P 系列
+	log "无法读取 $_f 的时间戳，保守跳过"
+	return 0
+}
+
+autosuspend_off() {
+	[ -w "$1/power/control" ] && echo on > "$1/power/control" 2>/dev/null
+	[ -w "$1/power/autosuspend" ] && echo -1 > "$1/power/autosuspend" 2>/dev/null
+}
+
+lock_acquire() {
+	_i=0
+	while ! mkdir "$LOCKDIR" 2>/dev/null; do
+		_i=$((_i + 1))
+		if [ "$_i" -ge 20 ]; then
+			# 锁超过 20 秒，视为残留
+			rm -rf "$LOCKDIR" 2>/dev/null
+			mkdir "$LOCKDIR" 2>/dev/null
+			break
+		fi
+		sleep 1
+	done
+}
+
+lock_release() { rm -rf "$LOCKDIR" 2>/dev/null; }
+
+# 写固件带看门狗：usblp 在设备无响应时可能阻塞
+write_fw() {
+	_src=$1; _dev=$2
+	cat "$_src" > "$_dev" 2>/dev/null &
+	_cpid=$!
+	_n=0
+	while kill -0 "$_cpid" 2>/dev/null; do
+		sleep 1
+		_n=$((_n + 1))
+		if [ "$_n" -ge 25 ]; then
+			kill "$_cpid" 2>/dev/null
+			wait "$_cpid" 2>/dev/null
+			log "写入超时（25s）：$_src -> $_dev"
+			return 1
+		fi
+	done
+	wait "$_cpid"
+	return $?
+}
+
+verify_loaded() {
+	_dev=$1; _i=0
+	while [ "$_i" -lt 3 ]; do
+		sleep 2
+		if is_loaded "$(id_of "$_dev")"; then
+			return 0
+		fi
+		_i=$((_i + 1))
+	done
+	return 1
+}
+
+load_one() {
+	_dev=$1; _vid=$2; _pid=$3; _usb=$4; _force=$5
+	_key=$(state_key "$_vid" "$_pid" "$_usb")
+	_id=$(id_of "$_dev")
+
+	if [ "$_force" != "1" ]; then
+		if is_loaded "$_id"; then
+			log "$_dev 已有 FWVER，跳过"
+			return 0
+		fi
+		if seen_recent "$_key"; then
+			log "$_dev 刚灌过（PID 可能已变），跳过"
+			return 0
+		fi
+	fi
+
+	_fw=$(fw_for "$_pid" "$_id")
+	if [ -z "$_fw" ]; then
+		log "$_dev PID $_pid 不在支持列表，跳过"
+		return 1
+	fi
+	if [ ! -f "$FWDIR/$_fw" ]; then
+		log "$_dev 需要 $_fw，但 $FWDIR/$_fw 不存在"
+		return 1
+	fi
+
+	autosuspend_off "$_usb"
+	log "$_dev ($_vid:$_pid) 下发 $_fw ($(stat -c %s "$FWDIR/$_fw" 2>/dev/null) 字节)"
+	if ! write_fw "$FWDIR/$_fw" "$_dev"; then
+		return 1
+	fi
+	mark_seen "$_key"
+
+	if verify_loaded "$_dev"; then
+		log "$_dev 固件加载成功（FWVER 已出现）"
+		return 0
+	fi
+	# 设备可能已重新枚举成新的 lpN，全量复查一次
+	find_printers | while IFS='|' read -r d v p u; do
+		[ "$v$_p" = "$_vid$_pid" ] || continue
+		if is_loaded "$(id_of "$d")"; then
+			log "$d 固件加载成功（重新枚举后确认）"
+		fi
+	done
+	log "$_dev 未读到 FWVER，请用 status 复查"
+	return 1
+}
+
+cmd_handle() {
+	[ "$(cfg enabled 1)" = "1" ] || return 0
+
+	if [ "$(cfg coexist 0)" != "1" ] && [ -f "$HPLIP_RULE" ] && [ -x /usr/bin/hp-config_usb_printer ]; then
+		log "检测到 hplip 热插拔规则与 hp-config_usb_printer，跳过（设 foo2zjs-fw.main.coexist=1 可强制）"
+		return 0
+	fi
+
+	_wait=$(cfg wait 6)
+	_i=0
+	while [ "$_i" -lt "$_wait" ]; do
+		[ -n "$(find_printers)" ] && break
+		sleep 1
+		_i=$((_i + 1))
+	done
+
+	lock_acquire
+	find_printers | while IFS='|' read -r dev vid pid usb; do
+		[ -n "$dev" ] || continue
+		load_one "$dev" "$vid" "$pid" "$usb" 0
+	done
+	lock_release
+}
+
+cmd_status() {
+	say "固件目录：$FWDIR"
+	if [ ! -d "$FWDIR" ] || [ -z "$(ls "$FWDIR"/*.dl 2>/dev/null)" ]; then
+		say "  (空或不存在 —— 需要自行放入 sihpXXXX.dl)"
+	fi
+	say ""
+	printf '%-21s %-12s %-28s %-12s %-14s %s\n' DEV VID:PID MODEL FWVER FIRMWARE STATE
+	find_printers | while IFS='|' read -r dev vid pid usb; do
+		[ -n "$dev" ] || continue
+		id=$(id_of "$dev")
+		mdl=$(model_of "$id")
+		[ -n "$mdl" ] || mdl="(未读到)"
+		fwv=$(echo "$id" | sed -n 's/.*FWVER:\([^;]*\).*/\1/p' | head -1)
+		[ -n "$fwv" ] || fwv="-"
+		fw=$(fw_for "$pid" "$id")
+		[ -n "$fw" ] || fw="-"
+		if is_loaded "$id"; then
+			st="ok"
+		elif [ -f "$FWDIR/$fw" ]; then
+			st="needs-fw"
+		else
+			st="no-file"
+		fi
+		printf '%-21s %-12s %-28s %-12s %-14s %s\n' \
+			"$dev" "$vid:$pid" "$mdl" "$fwv" "$fw" "$st"
+	done
+}
+
+cmd_list() {
+	cat <<'EOF'
+冷启动 PID   固件               机型
+03f0:0517    sihp1000.dl        LaserJet 1000
+03f0:1317    sihp1005.dl        LaserJet 1005
+03f0:4117    sihp1018.dl        LaserJet 1018（也是所有 P 系列灌完后的状态）
+03f0:2b17    sihp1020.dl        LaserJet 1020
+03f0:3d17    sihpP1005.dl       P1005
+03f0:3e17    sihpP1006.dl       P1006 / P1009（同一份固件）
+03f0:3f17    sihpP1505.dl       P1505
+03f0:4817    sihpP1005.dl       P1007（上游按 P1005 处理）
+03f0:4917    sihpP1006.dl       P1008（上游按 P1006 处理）
+EOF
+}
+
+cmd_load() {
+	_arg=$1; _force=0
+	[ "$2" = "--force" ] && _force=1
+	[ "$1" = "--force" ] && { _arg=""; _force=1; }
+
+	lock_acquire
+	find_printers | while IFS='|' read -r dev vid pid usb; do
+		[ -n "$dev" ] || continue
+		if [ -n "$_arg" ] && [ "$dev" != "$_arg" ]; then
+			continue
+		fi
+		load_one "$dev" "$vid" "$pid" "$usb" "$_force"
+	done
+	lock_release
+}
+
+cmd_install_fw() {
+	_src=$1
+	[ -n "$_src" ] || { say "用法：$PROG install-fw <目录|tar.gz>"; return 1; }
+	[ -e "$_src" ] || { say "不存在：$_src"; return 1; }
+	mkdir -p "$FWDIR"
+
+	_tmp=/tmp/foo2zjs-fw.$$
+	case "$_src" in
+	*.tar.gz|*.tgz)
+		mkdir -p "$_tmp" && tar -xzf "$_src" -C "$_tmp" || { rm -rf "$_tmp"; return 1; }
+		_srcdir=$_tmp ;;
+	*)
+		_srcdir=$_src ;;
+	esac
+
+	n=0
+	for f in "$_srcdir"/*.dl; do
+		[ -f "$f" ] || continue
+		_b=$(basename "$f")
+		if [ "$(md5sum "$f" 2>/dev/null | cut -d' ' -f1)" = "$(md5sum "$FWDIR/$_b" 2>/dev/null | cut -d' ' -f1)" ]; then
+			continue
+		fi
+		cp -f "$f" "$FWDIR/$_b" && chmod 644 "$FWDIR/$_b"
+		say "  安装 $_b"
+		n=$((n + 1))
+	done
+	[ "$_tmp" != "$_srcdir" ] && rm -rf "$_tmp"
+	say "完成：新增/更新 $n 个，共 $(ls "$FWDIR"/*.dl 2>/dev/null | wc -l) 个 .dl 在 $FWDIR"
+}
+
+cmd_toggle() {
+	command -v uci >/dev/null 2>&1 || { say "没有 uci"; return 1; }
+	uci -q get foo2zjs-fw.main >/dev/null 2>&1 || uci -q set foo2zjs-fw.main=foo2zjs-fw
+	uci -q set "foo2zjs-fw.main.enabled=$1"
+	uci -q commit foo2zjs-fw
+	say "自动下发已$([ "$1" = "1" ] && echo 启用 || echo 停用)"
+}
+
+case "$1" in
+status)		cmd_status ;;
+list)		cmd_list ;;
+load)		shift; cmd_load "$@" ;;
+handle)		cmd_handle ;;
+install-fw)	shift; cmd_install_fw "$@" ;;
+enable)		cmd_toggle 1 ;;
+disable)		cmd_toggle 0 ;;
+		*)
+	say "用法：$PROG {status|list|load [dev] [--force]|install-fw <path>|enable|disable}"
+	exit 1
+	;;
+esac

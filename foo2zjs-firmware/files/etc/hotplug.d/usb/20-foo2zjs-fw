@@ -1,0 +1,25 @@
+#!/bin/sh
+#
+# 20-foo2zjs-fw - USB hotplug hook for HP ZJS printers
+#
+# 只做三件事：过滤事件类型、确认是本包要管的 HP 打印机、把活交给 CLI。
+# 所有逻辑集中在 /usr/sbin/foo2zjs-fw，便于手动复现同一条路径。
+#
+
+[ "$SUBSYSTEM" = "usb" ] || exit 0
+
+case "$ACTION" in
+	bind|add) ;;
+	*) exit 0 ;;
+esac
+
+# 非 HP 设备直接放过（PRODUCT 形如 3f0/2b17/100）
+[ -n "$PRODUCT" ] && case "$PRODUCT" in
+	3f0/*) ;;
+	*) exit 0 ;;
+esac
+
+[ -x /usr/sbin/foo2zjs-fw ] || exit 0
+
+# 后台执行：灌固件可能耗时数秒，不要阻塞 hotplug 事件链
+/usr/sbin/foo2zjs-fw handle >/dev/null 2>&1 &

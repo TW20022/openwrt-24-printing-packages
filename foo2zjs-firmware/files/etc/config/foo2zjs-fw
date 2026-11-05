@@ -1,0 +1,6 @@
+config foo2zjs-fw 'main'
+	option enabled '1'
+	# 热插拔时等待 /dev/usb/lp* 就绪的秒数
+	option wait '6'
+	# 1 = 即使装了 hplip 的 10-hp-printer 也照常下发（默认 0，避免两条通道抢设备）
+	option coexist '0'

@@ -538,6 +538,30 @@ grep -iE 'pdf-to-ps|pdftops|status 9' /tmp/o.err
 真机上这一步修不好就别在 foo2zjs 上耗 —— hpcups 那条链已实测能为 1020 产出合法 ZJS 流，foo2zjs 更适合当"不经 CUPS 直接生成数据流"的工具（`test-foo2zjs-1020.sh` 第 2 步就是这么验的）。
 
 
+
+#### 7.6.2 成品包：`foo2zjs-firmware`（本 feed 自带）
+
+上面那段手工规则已封装成独立包，不塞进 `foo2zjs` 主包，可以单独装、单独卸：
+
+| 文件 | 作用 |
+|---|---|
+| `/etc/hotplug.d/usb/20-foo2zjs-fw` | 薄壳，只过滤 `SUBSYSTEM=usb` / `ACTION=bind` 或 `add` / `PRODUCT=3f0/*`，后台调用 CLI |
+| `/usr/sbin/foo2zjs-fw` | 全部逻辑：`status`、`load [dev] [--force]`、`list`、`install-fw <路径>`、`enable`/`disable` |
+| `/etc/config/foo2zjs-fw` | `enabled` / `wait`（等 `/dev/usb/lp*` 秒数）/ `coexist`（是否让位于 hplip） |
+
+覆盖 9 个冷启动 PID：`0517` `1317` `4117` `2b17` `3d17` `3e17` `3f17` `4817` `4917`。
+
+**去重与防误灌**是重点：先读 IEEE-1284 ID 里的 `FWVER`；P 系列灌完后 PID 会变成 `4117`（与 1018 撞号），这时若 FWVER 还没读出来，用 `/var/run/foo2zjs-fw/` 里 120 秒内的"刚灌过"标记兜底，并且只要 ID 里能认出是 P 系列就绝不灌 1018 的固件。检测到 hplip 的 `10-hp-printer` 时默认不动手（`uci set foo2zjs-fw.main.coexist=1` 可强制接管）。
+
+固件仍不随包分发（HP 专有许可），装完自行部署：
+
+```sh
+foo2zjs-fw install-fw /tmp/firmware-dl.tar.gz    # 13 个 .dl 一次装好
+foo2zjs-fw status                                 # 看 FWVER / 固件是否就位
+foo2zjs-fw load                                   # 手动灌一次
+logread | grep foo2zjs-fw                         # 看热插拔日志
+```
+
 ### 7.7 Brother 三个包怎么用
 
 | 包 | 内容 | 适用 |
