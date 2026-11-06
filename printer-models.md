@@ -1,16 +1,12 @@
 # 支持的打印机型号清单
 
 > 型号数据提取自本仓库编译产物（aarch64_generic）ipk 内的驱动定义文件，非手工整理。  
-> |  |  |  
-> | --- | --- |  
 > 设备上装好对应包后，用 `lpinfo -m | grep -i 型号` 即可在线查询。
 >
 > **提取方式按驱动栈而异**：hplip / foo2zjs / splix 来自 ipk 内附带的 PPD 与 `.drv` 文件；  
 > gutenprint 自 5.3 起不再预置 PPD，型号在 CUPS 查询时由驱动插件  
 > `/usr/lib/cups/driver/gutenprint.5.3` 依 XML 定义动态生成，因此这里解析的是  
 > ipk 内 `/usr/share/gutenprint/5.3/xml/printers/*.xml`（8 个家族定义文件），  
-> |  |  |  
-> | --- | --- |  
 > 条目数与设备上 `lpinfo -m | grep -c gutenprint` 的行数一致。
 
 ## 总览
@@ -27,6 +23,46 @@
 
 ---
 
+## 重叠与去重统计（2026-11-06）
+
+基于上表各驱动条目做名称归一化匹配（去标点/括号 → 去 series/printer 等噪声词 →
+去单字母前缀如 `P-2100` vs `2100`；再剥 `pcl3`/`PS`/版本号等 PPD 变体后缀归并物理机型），
+得到各驱动**物理机型数**与跨栈去重结果：
+
+| 驱动 | 原始条目 | 物理机型（去重后） |
+|---|---|---|
+| gutenprint 5.3.5 | 3608 | 3608 |
+| hplip | 1296 | 1212 |
+| foo2zjs | 101 | 101 |
+| splix | 86 | 86 |
+| brlaser | 29 | 29 |
+| brhl3040cn | 1 | 1 |
+| 条目合计 | 5121 | 5037 |
+| **跨栈去重后** | — | **4735** |
+
+即本 feed 全部驱动实际可驱动的**独立打印机型号为 4735 款**，跨栈重复覆盖约 302 款。
+
+### hplip 与其他栈的重叠度
+
+hplip 的 1212 款物理机型中，仅 265 款（21.9%）可被 gutenprint / foo2zjs / splix /
+brlaser / brhl3040cn 之一重复支持，**947 款（78.1%）为 hplip 独占**——不装 hplip
+时这些机型在纯开源驱动下无驱动可用。
+
+| 统计口径 | hplip | 被 gutenprint 覆盖 | 被 foo2zjs 覆盖 | 重叠合计 | hplip 独占 |
+|---|---|---|---|---|---|
+| 原始 PPD 条目 | 1296 | 211 | 14 | 225 (17.4%) | 1071 (82.6%) |
+| 物理机型 | 1212 | 248 | 19 | 265 (21.9%) | 947 (78.1%) |
+
+- **foo2zjs 覆盖的 19 款**：LJ 1000/1005/1018/1020/1022 系、P1005-P1008/P1505/P2035 系、
+  Color LaserJet 1600/2600n/CP1215、M1120/M1212nf MFP——即 ZJS 主机型那一批。
+- **仅 gutenprint 覆盖的 229 款**：老 Deskjet 喷墨（500/600/8xx/9xx 系）与老 Color
+  LaserJet（4500/4600/4650/4700/5500/8500/8550/9500、CP2025/CP3525/CP4025/CP4525/CP5225 等 PCL 彩激）。
+- **hplip 独占的 947 款构成**：喷墨是大头（Officejet 146 + Deskjet 135 + Photosmart 98 +
+  Envy 23），hpcups 的喷墨渲染为私有实现、无任何开源替代；其余为 LaserJet 241、
+  Color LaserJet 115、Designjet 60、PSC 24、其他 96、Business Inkjet 7、Apollo 2。
+
+> 结论：**不装 hplip 只对激光用户划算**；喷墨机型想脱离 hplip 打印，目前基本无解。
+
 ## gutenprint 5.3.5（通用驱动套件） — 3608 个型号
 
 Gutenprint 是覆盖面最广的开源打印驱动套件，按打印机语言分成 8 个家族（每个家族对应一个 PPD 生成后端），  
@@ -36,8 +72,6 @@ Gutenprint 是覆盖面最广的开源打印驱动套件，按打印机语言分
   所以 ipk 里看不到 `.ppd` 文件；也正因如此，CUPS 网页的「选择型号」页面在装了本包后会明显变慢（首次枚举需生成上千份 PPD）。
 - **命令行添加队列**时，下表「驱动名」即 gutenprint URI 中的型号段：  
   `lpadmin -p 队列名 -E -v <设备URI> -m "gutenprint.5.3://<驱动名>/expert"`。  
-  |  |  |  
-  | --- | --- |  
   实际 URI 用 `lpinfo -m | grep gutenprint.5.3` 核对。本 feed 编译时用了 `--disable-simplified-cups-ppds`，  
   每个型号只输出 `/expert` 一条（否则还会多出 `/simple` 简化版，即界面上带 `Simplified` 后缀的那份）。
 - **EXPERIMENTAL 标记**（共 1341 个，其中 Canon 喷墨 1097 个）表示上游未取得充分实机验证，  
@@ -219,7 +253,6 @@ Gutenprint 是覆盖面最广的开源打印驱动套件，按打印机语言分
 | Gestetner DSc1020                      | `gestetner-dsc1020`  |              |
 | Gestetner DSc1025                      | `gestetner-dsc1025`  |              |
 | Gestetner DSc1030                      | `gestetner-dsc1030`  |              |
-
 | Gestetner DSc1045 | `gestetner-dsc1045` |  |
 | Gestetner DSc1060 | `gestetner-dsc1060` |  |
 | Gestetner DSc1120 | `gestetner-dsc1120` |  |
@@ -412,7 +445,6 @@ Gutenprint 是覆盖面最广的开源打印驱动套件，按打印机语言分
 | HP Color LaserJet CP3525x | `hp-clj_cp3525x` | EXPERIMENTAL |
 | HP Color LaserJet CP4005 | `hp-clj_cp4005` | EXPERIMENTAL |
 | HP Color LaserJet CP4005dn | `hp-clj_cp4005dn` | EXPERIMENTAL |
-
 | HP Color LaserJet CP4005n | `hp-clj_cp4005n` | EXPERIMENTAL |
 | HP Color LaserJet CP4020 | `hp-clj_cp4020` | EXPERIMENTAL |
 | HP Color LaserJet CP4500 | `hp-clj_cp4500` | EXPERIMENTAL |
@@ -677,7 +709,6 @@ Gutenprint 是覆盖面最广的开源打印驱动套件，按打印机语言分
 | HP PhotoSmart 7150 | `hp-psc_7150` |  |
 | HP PhotoSmart 7345 | `hp-psc_7345` |  |
 | HP PhotoSmart 7350 | `hp-psc_7350` |  |
-
 | HP PhotoSmart 7550 | `hp-psc_7550` |  |
 | HP PhotoSmart P100 | `hp-psc_p100` |  |
 | HP PhotoSmart P1000 | `pcl-P1000` |  |
@@ -918,7 +949,6 @@ Gutenprint 是覆盖面最广的开源打印驱动套件，按打印机语言分
 | Kyocera KM-3050 | `kyocera-km-3050` |  |
 | Kyocera KM-3530 | `kyocera-km-3530` |  |
 | Kyocera KM-4050 | `kyocera-km-4050` |  |
-
 | Kyocera KM-4230 | `kyocera-km-4230` |  |
 | Kyocera KM-4230/5230 | `kyocera-km-4230_5230` |  |
 | Kyocera KM-4530 | `kyocera-km-4530` |  |
@@ -1159,7 +1189,6 @@ Gutenprint 是覆盖面最广的开源打印驱动套件，按打印机语言分
 | NRG MP C2551 | `nrg-mp_c2551` |  |
 | NRG MP C2800 | `nrg-mp_c2800` |  |
 | NRG MP C300 | `nrg-mp_c300` |  |
-
 | NRG MP C3000 | `nrg-mp_c3000` |  |
 | NRG MP C3001 | `nrg-mp_c3001` |  |
 | NRG MP C3002 | `nrg-mp_c3002` |  |
@@ -1400,7 +1429,6 @@ Gutenprint 是覆盖面最广的开源打印驱动套件，按打印机语言分
 | Samsung ML-2551N | `samsung-ml-2551n` |  |
 | Samsung ML-2552W | `samsung-ml-2552w` |  |
 | Samsung ML-4600 | `samsung-ml-4600` |  |
-
 | Samsung ML-5000a | `samsung-ml-5000a` |  |
 | Samsung ML-6000 | `samsung-ml-6000` |  |
 | Samsung ML-6100 | `samsung-ml-6100` |  |
@@ -2729,7 +2757,6 @@ Canon BJ/BJC/S/i/MP/MX/PIXMA 等；绝大多数在 Gutenprint 中标注为实验
 | Canon PIXMA iP7260 | `bjc-PIXMA-iP7260` | EXPERIMENTAL |
 | Canon PIXMA iP7270 | `bjc-PIXMA-iP7270` | EXPERIMENTAL |
 | Canon PIXMA iP7280 | `bjc-PIXMA-iP7280` | EXPERIMENTAL |
-
 | Canon PIXMA iP7500 | `bjc-PIXMA-iP7500` | EXPERIMENTAL |
 | Canon PIXMA iP7810 | `bjc-PIXMA-iP8710` | EXPERIMENTAL |
 | Canon PIXMA iP8100 | `bjc-PIXMA-iP8100` | EXPERIMENTAL |
@@ -3938,7 +3965,6 @@ PostScript Level 1 / Level 2 通用驱动
 | HP ColorLaserJet MFP M178-M181 | Postscript (recommended) |
 | HP ColorLaserJet MFP M182-M185 | Postscript (recommended) |
 | HP ColorLaserJet MFP M278-M281 | Postscript (recommended) |
-
 | HP ColorLaserJet MFP M282-M285 | Postscript (recommended) |
 | HP cp1160 | hpcups 3.25.6 |
 | HP Designjet 4000ps | Postscript (recommended) |
@@ -5277,11 +5303,7 @@ PostScript Level 1 / Level 2 通用驱动
 >
 > ```sh
 > # 设备上核对总数（应约为 3608 条，含 hplip 等其他栈会更多）
-|  |  |
-| --- | --- |
 > lpinfo -m | grep -c "gutenprint"
 > # 查某个型号对应的驱动名
-|  |  |
-| --- | --- |
 > lpinfo -m | grep -i "laserjet 3050"
 > ```
