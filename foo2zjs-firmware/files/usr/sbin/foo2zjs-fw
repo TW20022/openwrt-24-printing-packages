@@ -19,8 +19,14 @@
 #  2. 去重靠 IEEE-1284 ID 里的 FWVER。P 系列灌完后 PID 会变成 4117（与 1018
 #     撞号），此时若读不到 FWVER，会再用 /var/run 里的"刚灌过"标记兜底，
 #     避免把 1018 的固件灌进 P1005/P1006/P1505。
-#  3. 写固件走 usblp（/dev/usb/lpN），与 hplip 的 libusb 通道互斥。检测到
-#     hplip 那条规则在时默认不动手。
+#  3. 写固件走 usblp（/dev/usb/lpN），与 hplip 的 libusb 通道互斥。共处三档
+#     （/etc/config/foo2zjs-fw 的 coexist）：
+#       0 = 检测到 hplip 完整链（10-hp-printer + hp-config_usb_printer）整体让位
+#       1 = 无条件接管（靠 FWVER 去重避免与 hplip 重复灌）
+#       2 = 互补：普通机型(0517/1317/2b17/4117)让 hplip，仅 P 系列冷启动
+#           (3d17/3e17/3f17/4817/4917)兜底 —— models.dat 把这几款登记为灌后
+#           PID 4117，冷启动可能判 Unsupported 而漏灌；先等 supp_wait 秒让
+#           hplip 试，没灌成再动手
 #
 
 PROG=foo2zjs-fw
@@ -206,6 +212,27 @@ load_one() {
 		fi
 	fi
 
+	# 互补模式：只兜底 hplip 可能漏的 P 系列冷启动 PID
+	if [ "$SUPP_MODE" = "1" ] && [ "$_force" != "1" ]; then
+		case "$_pid" in
+			3d17|3e17|3f17|4817|4917)
+				_sw=$(cfg supp_wait 20)
+				log "$_dev coexist=2：P 系列冷启动，等 ${_sw}s 让 hplip 先试"
+				sleep "$_sw" 2>/dev/null
+				# hplip 灌完设备可能已重枚举，重新读 ID
+				_id=$(id_of "$_dev")
+				if is_loaded "$_id"; then
+					log "$_dev hplip 已灌好（FWVER 出现），跳过"
+					return 0
+				fi
+				;;
+			*)
+				log "$_dev coexist=2：$_pid 属普通机型，由 hplip 链处理"
+				return 0
+				;;
+		esac
+	fi
+
 	_fw=$(fw_for "$_pid" "$_id")
 	if [ -z "$_fw" ]; then
 		log "$_dev PID $_pid 不在支持列表，跳过"
@@ -241,9 +268,23 @@ load_one() {
 cmd_handle() {
 	[ "$(cfg enabled 1)" = "1" ] || return 0
 
-	if [ "$(cfg coexist 0)" != "1" ] && [ -f "$HPLIP_RULE" ] && [ -x /usr/bin/hp-config_usb_printer ]; then
-		log "检测到 hplip 热插拔规则与 hp-config_usb_printer，跳过（设 foo2zjs-fw.main.coexist=1 可强制）"
-		return 0
+	# 与 hplip 的三种共处模式：
+	#   coexist=0  检测到 hplip 完整链（规则+hp-config_usb_printer）→ 整体让位
+	#   coexist=1  无条件接管（hplip 链照旧尝试，本脚本靠 FWVER 去重避免重复灌）
+	#   coexist=2  互补：普通机型(0517/1317/2b17/4117)让 hplip；
+	#              仅 P 系列冷启动(3d17/3e17/3f17/4817/4917)兜底 —— hplip 的
+	#              models.dat 把这几款登记为灌后 PID 4117，冷启动可能判
+	#              Unsupported 而漏灌；先等 hplip 试一遍，没灌成再动手
+	SUPP_MODE=0
+	if [ -f "$HPLIP_RULE" ] && [ -x /usr/bin/hp-config_usb_printer ]; then
+		_co=$(cfg coexist 0)
+		if [ "$_co" = "2" ]; then
+			SUPP_MODE=1
+			log "coexist=2 互补模式：普通机型让 hplip，P 系列冷启动由本脚本兜底"
+		elif [ "$_co" != "1" ]; then
+			log "检测到 hplip 热插拔规则与 hp-config_usb_printer，跳过（coexist=1 强制接管 / coexist=2 互补）"
+			return 0
+		fi
 	fi
 
 	_wait=$(cfg wait 6)

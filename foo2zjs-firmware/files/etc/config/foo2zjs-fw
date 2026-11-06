@@ -2,5 +2,12 @@ config foo2zjs-fw 'main'
 	option enabled '1'
 	# 热插拔时等待 /dev/usb/lp* 就绪的秒数
 	option wait '6'
-	# 1 = 即使装了 hplip 的 10-hp-printer 也照常下发（默认 0，避免两条通道抢设备）
+	# 与 hplip（10-hp-printer + hplip-tools）的共处模式：
+	#   0 = 检测到 hplip 完整链时整体让位（默认，单一下发通道最安全）
+	#   1 = 无条件接管，hplip 链照旧尝试（靠 FWVER 去重避免重复灌）
+	#   2 = 互补：普通机型让 hplip，仅 P 系列冷启动(3d17/3e17/3f17/4817/4917)
+	#       兜底 —— hplip 的 models.dat 把这几款登记为灌后 PID 4117，
+	#       冷启动可能判 Unsupported 而漏灌
 	option coexist '0'
+	# coexist=2 时，插上 P 系列后先等 hplip 尝试的秒数（超时仍未灌则本脚本接手）
+	option supp_wait '20'

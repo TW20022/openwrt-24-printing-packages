@@ -51,12 +51,24 @@ HP LaserJet 1000/1005/1018/1020、P1005/P1006/P1007/P1008/P1009/P1505 这批机�
 五、与 hplip 的关系
 ------------------
 hplip 的 /etc/hotplug.d/usb/10-hp-printer 走 libusb 直写，本包走 usblp
-（/dev/usb/lpN）。两条通道同时写同一台设备会把设备写僵。
-检测到 hplip 那条规则且 /usr/bin/hp-config_usb_printer 存在时，本包默认不动手。
-确实要接管，改 /etc/config/foo2zjs-fw：
+（/dev/usb/lpN）。两条通道同时写同一台设备会把设备写僵，因此提供三档
+共处模式（/etc/config/foo2zjs-fw 的 option coexist）：
 
-    option coexist '1'
+    0 = 默认。检测到 hplip 完整链（10-hp-printer 且
+        /usr/bin/hp-config_usb_printer 可执行）时，本包整体让位，
+        固件全部交给 hplip。
+    1 = 无条件接管。hplip 链照常尝试，本包也照常下发，
+        靠 FWVER 去重避免对同一台设备重复灌。
+    2 = 互补（推荐两包共存时使用）。普通机型（PID 0517/1317/2b17/4117）
+        让 hplip 处理；仅 P 系列冷启动（3d17/3e17/3f17/4817/4917）兜底
+        ——hplip 的 models.dat 把这几款登记为灌后 PID 4117，冷启动可能判
+        Unsupported 而漏灌。本包会先等 supp_wait 秒（默认 20）让 hplip
+        先试，没灌成（FWVER 未出现）再自己动手。
 
+    注意：固件内容两边是同一份字节（.fw.gz 解压 == .dl），灌进打印机后
+    与哪个工具、哪个队列无关，hpcups 和 foo2zjs 队列都能用。
+    用户层面的"二选一"发生在 CUPS 队列层（hpcups PPD 队列 vs
+    Foomatic/foo2zjs 队列），与固件下发互不影响。
 六、日志
 --------
     logread | grep foo2zjs-fw
