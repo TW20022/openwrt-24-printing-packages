@@ -725,7 +725,8 @@ sh install.sh --restore        # 想回英文
 - `printer-added.tmpl` 补回「设置打印机选项」表单（`org.cups.sid` 全缺，否则加完打印机没有下一步入口）；
 - `jobs.tmpl` 补回 `{job_hold_until=auth-info-required?}` 分支，译全 `pending since / completed at / Unknown / Withheld`；
 - 导航「类别」「类」统一为**集群**，删掉「帮助」（`/help/` 文档未随固件打包，点了必 404）；class 相关 10 个模板的「添加类/删除类/修改类」同步改为集群；
-- 首页正文原来整片是 `help/*.html` 死链，换成「常用入口」+「使用提示」两栏。
+- 首页正文原来整片是 `help/*.html` 死链，换成「常用入口」+「使用提示」两栏；
+- `add-printer.tmpl` / `modify-printer.tmpl` 的「共享」勾选框补 `VALUE="CHECKED"`：译文源自 2.4.1，勾选框没有 VALUE，浏览器提交 `on`，而 CUPS 2.4.8+ 的 `cgiGetCheckbox` 只认 `checked`，导致共享被静默清零（上游 issue #1008）。**2026-11-09 已修复并重新打包 `cups-zh-cn.tar.gz`**；装过旧包的重跑 `install.sh` 即可，模板按请求读取、无需重启 cupsd。
 
 已知限制：`opkg upgrade cups` 会覆盖模板，升级后需重跑一次 `install.sh`；`help/` 在线帮助文档未汉化（原始译文包也没做完，几 MB 放路由器 Flash 不划算）。
 
