@@ -728,6 +728,8 @@ sh install.sh --restore        # 想回英文
 - 首页正文原来整片是 `help/*.html` 死链，换成「常用入口」+「使用提示」两栏；
 - `add-printer.tmpl` / `modify-printer.tmpl` 的「共享」勾选框补 `VALUE="CHECKED"`：译文源自 2.4.1，勾选框没有 VALUE，浏览器提交 `on`，而 CUPS 2.4.8+ 的 `cgiGetCheckbox` 只认 `checked`，导致共享被静默清零（上游 issue #1008）。**2026-11-09 已修复并重新打包 `cups-zh-cn.tar.gz`**；装过旧包的重跑 `install.sh` 即可，模板按请求读取、无需重启 cupsd。
 
+> **24.10.8 / aarch64_generic 起编译期已内置汉化**：`cups` 包 `PKG_RELEASE=2` 把 `cups/files/zh-cn/` 的 65 个中文模板与中文首页在 `Package/cups/install` 阶段直接覆盖安装，装完即中文，不必再跑 `cups-zh-cn.tar.gz` 里的 `install.sh`；`Build/Compile` 同时给 `cupsd.conf` 写入 `DefaultEncryption Never` 并删除 `Encryption Required`，`http://<IP>:631/admin` 不再被 426 强制跳自签 HTTPS。
+
 已知限制：`opkg upgrade cups` 会覆盖模板，升级后需重跑一次 `install.sh`；`help/` 在线帮助文档未汉化（原始译文包也没做完，几 MB 放路由器 Flash 不划算）。
 
 ### 7.10 无真机的链路自测（tools/）
