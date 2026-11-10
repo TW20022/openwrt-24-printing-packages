@@ -2,6 +2,8 @@
 
 OpenWrt 24.10.8 `armsr/armv8` 打印软件包 feed，由两个上游仓库合并、去重并在 aarch64 交叉编译环境中全部实测编译通过。
 
+> **手机查型号**：[打印机型号速查](docs/index.html) 是适配手机的单页查询版（搜索 / 筛选 / 机型聚合，数据内嵌可离线保存），不必再翻 5309 行的 [printer-models.md](printer-models.md)。用法见「五、目录结构」后的说明。
+
 ## 一、来源与合并规则
 
 | 来源 | 处理方式 |
@@ -257,7 +259,35 @@ hp-setup -i      # 连接打印机后配置
 ├── splix/
 ├── cups-zh/                  # CUPS Web 中文界面包（非 OpenWrt 包，见 7.9）
 ├── tools/                    # 路由器端排障脚本（链路自测 / 固件下发 / raster 诊断，见 7.10）
+├── docs/index.html           # 打印机型号速查页（手机友好，见下方说明）
+├── docs/build.py             # 由 printer-models.md 重新生成速查页
+├── printer-models.md         # 完整型号清单（Markdown 表格，5309 行）
 └── README.md
+```
+
+### 打印机型号速查（手机友好）
+
+`printer-models.md` 是完整型号清单（5309 行 / 260 KB），在手机浏览器里看 GitHub 渲染的宽表格、
+往下翻几千行都很吃力。`docs/index.html` 是同一份数据的查询版：
+
+- **纯静态单文件**：5121 条记录全部内嵌、零外部依赖，可直接发到手机用浏览器打开，离线可用，
+  也能「添加到主屏幕」；深色模式自动跟随系统。
+- **搜索**：型号 / 驱动名 / 备注 / 包名全文匹配，支持空格分词、忽略大小写与连字符；
+  结果按机型聚合，点开能看到该机型在哪些驱动栈下可用，并一键复制驱动名或 `lpinfo -m` 查询命令。
+- **筛选**：gutenprint / hplip / foo2zjs / splix / brlaser / brhl3040cn，
+  以及 gutenprint 的 8 个家族；搜索状态写在 URL hash 里，可直接把链接分享给别人。
+- **分页**：每页 30 款，点「加载更多」继续，不会一次渲染 5000 行。
+- 数据口径：5121 条驱动记录，按名称聚合 4912 组；原表跨栈去重为 **4735** 款独立机型、
+  **947** 款 hplip 独占、1341 条 EXPERIMENTAL。两种口径不同是因为聚合只做名称归一化，
+  原表还剥了 PPD 变体后缀，统计数字以原表为准。
+
+在 GitHub 开启 Pages（Settings → Pages → Deploy from a branch → `main` / `docs`）后，
+手机可直接访问 `https://tw20022.github.io/openwrt-24-printing-packages/`。
+
+型号清单更新后重新生成页面（脚本只依赖 Python 标准库）：
+
+```sh
+python3 docs/build.py --src printer-models.md --out docs/index.html
 ```
 
 ## 六、已知限制
